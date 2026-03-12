@@ -1,0 +1,1 @@
+"""FastAPI facilitator HTTP service."""
