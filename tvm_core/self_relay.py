@@ -29,7 +29,7 @@ from .constants import (
 )
 from .jetton import build_jetton_transfer_payload
 from .providers import TonProvider
-from .signing import W5R1Signer
+from .signing import W5R1Signer, W5R1_MAINNET_WALLET_ID
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ class SelfRelay:
         provider: TonProvider,
         private_key_hex: str,
         gas_amount: int = DEFAULT_GAS_AMOUNT,
-        wallet_id: int = -239,
+        wallet_id: int = W5R1_MAINNET_WALLET_ID,
     ) -> None:
         self._provider = provider
         self._gas_amount = gas_amount
@@ -114,7 +114,7 @@ class SelfRelay:
         return {
             "seqno": seqno,
             "validUntil": valid_until,
-            "walletId": -239,  # mainnet W5R1 default
+            "walletId": W5R1_MAINNET_WALLET_ID,
             "messages": [
                 {
                     "address": jetton_wallet,

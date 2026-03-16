@@ -8,14 +8,15 @@ from nacl.exceptions import BadSignatureError
 from nacl.signing import VerifyKey
 from pytoniq_core import Cell
 
+from tvm_core.boc import parse_external_message
 from tvm_core.constants import INTERNAL_SIGNED_OP, EXTERNAL_SIGNED_OP, W5R1_CODE_HASH
 
 
 def verify_w5_signature(boc_b64: str, pubkey_hex: str) -> tuple[bool, str]:
     """Verify the Ed25519 signature of a W5R1 external message.
 
-    W5R1 body layout: [512-bit signature] [remaining signed payload].
-    The signature covers the hash of the body cell built from the remaining payload.
+    W5R1 body layout: [optional opcode] [512-bit signature] [signed payload].
+    The signature covers the hash of the payload cell.
 
     Args:
         boc_b64: Base64-encoded BoC containing the external message.
@@ -25,13 +26,10 @@ def verify_w5_signature(boc_b64: str, pubkey_hex: str) -> tuple[bool, str]:
         (True, "") on success, (False, reason) on failure.
     """
     try:
-        cell = Cell.one_from_boc(base64.b64decode(boc_b64))
+        body = parse_external_message(boc_b64)
     except Exception as e:
         return False, f"Failed to parse BoC: {e}"
 
-    # External message: body is either inline or in the first ref.
-    # In standard serialization the body is stored as a ref when it doesn't fit inline.
-    body = cell.refs[0] if cell.refs else cell
     body_slice = body.begin_parse()
 
     # Detect W5 body format: internal_signed (0x73696e74) or external_signed (0x7369676e)

@@ -14,6 +14,12 @@ from pytoniq_core import Address, Builder, Cell
 
 from .constants import INTERNAL_SIGNED_OP, W5R1_CODE_HASH
 
+# W5R1 wallet_id encoding: networkGlobalId with MSB cleared (v5r1 convention)
+# Mainnet: (-239) & 0x7FFFFFFF = 0x7FFFFF11
+# Testnet: (-3)   & 0x7FFFFFFF = 0x7FFFFFFD
+W5R1_MAINNET_WALLET_ID = (-239) & 0x7FFFFFFF  # 2147483409
+W5R1_TESTNET_WALLET_ID = (-3) & 0x7FFFFFFF  # 2147483645
+
 # W5R1 contract code BOC (from @ton/ton WalletContractV5R1)
 W5R1_CODE_BOC = (
     "te6cckECFAEAAoEAART/APSkE/S88sgLAQIBIAINAgFIAwQC3NAg10nBIJFbj2Mg1wsfIIIQ"
@@ -46,7 +52,7 @@ class W5R1Signer:
         self,
         secret_key: bytes,
         workchain: int = 0,
-        wallet_id: int = -239,
+        wallet_id: int = W5R1_MAINNET_WALLET_ID,
     ) -> None:
         if len(secret_key) != 32:
             raise ValueError(f"secret_key must be 32 bytes, got {len(secret_key)}")
@@ -223,7 +229,7 @@ class W5R1Signer:
 def create_w5_sign_fn(
     secret_key: bytes,
     workchain: int = 0,
-    wallet_id: int = -239,
+    wallet_id: int = W5R1_MAINNET_WALLET_ID,
 ) -> Callable[..., Coroutine[Any, Any, str]]:
     """Create an async sign_fn compatible with ExactTvmClientScheme.
 
