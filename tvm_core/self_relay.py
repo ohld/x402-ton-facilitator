@@ -25,6 +25,8 @@ from .boc import parse_external_message
 from .constants import (
     DEFAULT_GAS_AMOUNT,
     DEFAULT_JETTON_FWD_AMOUNT,
+    INTERNAL_SIGNED_OP,
+    EXTERNAL_SIGNED_OP,
     USDT_MASTER,
 )
 from .jetton import build_jetton_transfer_payload
@@ -176,29 +178,51 @@ class SelfRelay:
         # Add 50% buffer for safety (gas prices can fluctuate between emulation and broadcast)
         return int(total_fees * 1.5)
 
+    @staticmethod
+    def _detect_opcode(body_cell: Cell) -> int | None:
+        """Detect the auth opcode from the body cell."""
+        cs = body_cell.begin_parse()
+        if cs.remaining_bits >= 32:
+            return cs.preload_uint(32)
+        return None
+
     async def relay(
         self,
         signed_external_boc: str,
         user_wallet_address: str,
     ) -> str:
-        """Relay a user's signed W5 message by sponsoring gas.
+        """Relay a user's signed message.
 
-        Uses TONAPI emulation to estimate precise gas, falling back
-        to the default gas_amount if emulation fails.
+        Dual-mode settlement:
+        - internal_signed (0x73696e74): gasless — facilitator wraps + sponsors gas
+        - external_signed (0x7369676e): direct — facilitator broadcasts user's BoC as-is
+
+        Uses TONAPI emulation for precise gas estimation in gasless mode.
         """
         body_cell = parse_external_message(signed_external_boc)
+        opcode = self._detect_opcode(body_cell)
+
+        # --- Non-gasless: user signed external, pays own gas ---
+        if opcode == EXTERNAL_SIGNED_OP:
+            logger.info("Direct broadcast (user pays gas): %s...", user_wallet_address[:20])
+            ok = await self._provider.send_boc(signed_external_boc)
+            if not ok:
+                raise RuntimeError("Failed to broadcast user's external message")
+            return signed_external_boc[:16]
+
+        # --- Gasless: facilitator wraps in internal message + sponsors gas ---
         body_boc = base64.b64encode(body_cell.to_boc()).decode()
         user_raw = normalize_address(user_wallet_address)
         fac_seqno = await self._provider.get_seqno(self._signer.address)
 
-        # Try emulation-based gas estimation
+        # Emulation-based gas estimation
         estimated_gas = await self._estimate_gas(body_boc, user_raw, fac_seqno)
         gas_amount = estimated_gas if estimated_gas else self._gas_amount
 
         logger.info(
-            "Gas estimate: %s nanoTON (%s)",
+            "Gasless relay: gas=%d nanoTON (%s)",
             gas_amount,
-            "emulated" if estimated_gas else "default fallback",
+            "emulated" if estimated_gas else "default",
         )
 
         fac_boc = self._build_relay_boc(body_boc, user_raw, fac_seqno, gas_amount)
@@ -206,12 +230,5 @@ class SelfRelay:
         ok = await self._provider.send_boc(fac_boc)
         if not ok:
             raise RuntimeError("Failed to broadcast relay message")
-
-        logger.info(
-            "Relayed payment: user=%s fac_seqno=%d gas=%d",
-            user_raw[:20],
-            fac_seqno,
-            gas_amount,
-        )
 
         return fac_boc[:16]

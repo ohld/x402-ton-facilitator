@@ -110,10 +110,21 @@ pytest tests/ -v
 The facilitator wallet (W5R1) is **deployed automatically** on the first settlement. No manual deployment needed — just fund the address shown in `/health` and the first `/settle` call deploys the wallet contract and relays the payment in a single transaction.
 
 **Funding:**
-- Each payment costs ~0.065 TON (0.06 gas + broadcast fees)
-- Start with **10 TON** (~150 payments)
+- Gas per payment is estimated via emulation (~0.013 TON actual + 50% buffer)
+- `GAS_AMOUNT` is the fallback if emulation fails
+- Start with **10 TON** (~500 payments)
 - Monitor balance via `/health` endpoint
-- The wallet address is deterministic from `FACILITATOR_PRIVATE_KEY`
+
+### Settlement Modes
+
+The facilitator auto-detects the settlement mode from the signed BoC:
+
+| Client signs with | Opcode | Who pays gas | Facilitator action |
+|-------------------|--------|-------------|-------------------|
+| `authType="internal"` | `0x73696e74` | Facilitator | Wraps in internal msg + sponsors gas |
+| `authType="external"` | `0x7369676e` | Client | Broadcasts client's BoC directly |
+
+SDK clients auto-select the mode — developers don't need to configure this.
 
 ## Wallet Compatibility
 
