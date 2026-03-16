@@ -125,70 +125,49 @@ def parse_w5_body(body_cell: Cell) -> W5ParsedMessage:
 
 
 def _parse_w5_actions(action_cell: Cell) -> list[dict[str, Any]]:
-    """Parse W5 action chain from a cell.
+    """Parse W5 OutList from a cell.
 
-    W5R1 actions are chained: each action has an optional ref to the next action,
-    plus a send_msg action: op(32) mode(8) ^MessageRelaxed
+    TVM OutList format (c5 register):
+        out_list_empty$_ = OutList 0  (empty cell)
+        out_list$_ prev:^(OutList n) action:OutAction = OutList (n + 1)
+
+    Each action_send_msg: op#0ec3c86d mode:(## 8) out_msg:^(MessageRelaxed)
+    Layout: [ref:prev] [op(32)] [mode(8)] [ref:msg]
 
     Args:
-        action_cell: Cell containing W5 actions.
+        action_cell: Cell containing the OutList.
 
     Returns:
         List of parsed internal message dicts.
     """
+    SEND_MSG_OP = 0x0EC3C86D
     messages: list[dict[str, Any]] = []
     current = action_cell
 
     while True:
         cs = current.begin_parse()
 
-        # Check for next action in first ref
-        next_action = None
-        if cs.remaining_refs > 0 and cs.remaining_bits >= 32:
-            # Peek at opcode
-            op = cs.preload_uint(32)
+        if cs.remaining_bits < 32:
+            break  # reached empty cell (OutList 0) or malformed
 
-            # W5 action opcodes
-            SEND_MSG_OP = 0x0EC3C86D
-            SET_DATA_OP = 0x1FF8EA0B
-
-            if op == SEND_MSG_OP:
-                cs.load_uint(32)  # consume op
-                mode = cs.load_uint(8)
-                msg_cell = cs.load_ref()
-
-                # Parse internal message
-                parsed = _parse_internal_message(msg_cell)
-                parsed["send_mode"] = mode
-                messages.append(parsed)
-
-                # Next action in remaining ref
-                if cs.remaining_refs > 0:
-                    next_action = cs.load_ref()
-            elif op == SET_DATA_OP:
-                # Skip set_data actions
-                cs.load_uint(32)
-                if cs.remaining_refs > 0:
-                    cs.load_ref()  # skip data
-                if cs.remaining_refs > 0:
-                    next_action = cs.load_ref()
-            else:
-                # Unknown op — try to find message in refs
-                if cs.remaining_refs > 0:
-                    ref = cs.load_ref()
-                    # Could be the action chain or a message
-                    try:
-                        parsed = _parse_internal_message(ref)
-                        messages.append(parsed)
-                    except Exception:
-                        next_action = ref
-        elif cs.remaining_refs > 0:
-            # No opcode — might be a continuation ref
-            next_action = cs.load_ref()
-
-        if next_action is None:
+        # OutList node: prev ref comes first
+        if cs.remaining_refs < 1:
             break
-        current = next_action
+        prev_cell = cs.load_ref()  # ref to previous OutList
+
+        # Read action
+        op = cs.load_uint(32)
+        if op == SEND_MSG_OP and cs.remaining_refs > 0:
+            mode = cs.load_uint(8)
+            msg_cell = cs.load_ref()
+            parsed = _parse_internal_message(msg_cell)
+            parsed["send_mode"] = mode
+            messages.append(parsed)
+
+        # Walk to previous actions
+        if prev_cell.begin_parse().remaining_bits == 0 and len(prev_cell.refs) == 0:
+            break  # empty cell = OutList(0), stop
+        current = prev_cell
 
     return messages
 

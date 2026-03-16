@@ -141,19 +141,22 @@ class W5R1Signer:
         if not messages:
             return None
 
-        # Build from LAST message to FIRST (chained via refs)
-        prev_action: Cell | None = None
+        # Build OutList (TVM c5 register format):
+        #   out_list_empty$_ = OutList 0  (empty cell)
+        #   out_list$_ prev:^(OutList n) action:OutAction = OutList (n + 1)
+        # Build from last to first so first action ends up at top (matches @ton/core).
+        prev_list = Builder().end_cell()  # OutList(0) — empty cell
+
         for msg in reversed(messages):
             int_msg = self._build_internal_message(msg)
             ab = Builder()
+            ab.store_ref(prev_list)  # prev actions ref comes first
             ab.store_uint(SEND_MSG_OP, 32)
             ab.store_uint(send_mode, 8)
             ab.store_ref(int_msg)
-            if prev_action is not None:
-                ab.store_ref(prev_action)
-            prev_action = ab.end_cell()
+            prev_list = ab.end_cell()
 
-        return prev_action
+        return prev_list
 
     def _store_signing_message(
         self,
