@@ -12,7 +12,7 @@ from typing import Any, Callable, Coroutine
 from nacl.signing import SigningKey
 from pytoniq_core import Address, Builder, Cell
 
-from .constants import INTERNAL_SIGNED_OP, W5R1_CODE_HASH
+from .constants import EXTERNAL_SIGNED_OP, INTERNAL_SIGNED_OP, W5R1_CODE_HASH
 
 # W5R1 wallet_id encoding: networkGlobalId with MSB cleared (v5r1 convention)
 # Mainnet: (-239) & 0x7FFFFFFF = 0x7FFFFF11
@@ -193,10 +193,12 @@ class W5R1Signer:
         signed = self._signing_key.sign(payload_cell.hash)
         signature = signed.signature
 
-        # Build body cell
+        # Build body cell — W5R1 requires opcode prefix for both formats
         body_b = Builder()
         if auth_type == "internal":
             body_b.store_uint(INTERNAL_SIGNED_OP, 32)  # 0x73696e74
+        else:
+            body_b.store_uint(EXTERNAL_SIGNED_OP, 32)  # 0x7369676e
         body_b.store_bytes(signature)
         body_b.store_int(self._wallet_id, 32)
         body_b.store_uint(valid_until, 32)
