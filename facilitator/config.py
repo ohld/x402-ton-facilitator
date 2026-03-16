@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import os
 
+from tvm_core.constants import DEFAULT_GAS_AMOUNT
+
 TONAPI_KEY: str = os.getenv("TONAPI_KEY", "")
 FACILITATOR_PRIVATE_KEY: str = os.getenv("FACILITATOR_PRIVATE_KEY", "")
-GAS_AMOUNT: int = int(os.getenv("GAS_AMOUNT", "150000000"))  # 0.15 TON
+GAS_AMOUNT: int = int(os.getenv("GAS_AMOUNT", str(DEFAULT_GAS_AMOUNT)))
 TESTNET: bool = os.getenv("TESTNET", "").lower() in ("1", "true", "yes")
 
 # Supported networks — comma-separated CAIP-2 IDs
