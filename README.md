@@ -115,14 +115,45 @@ The facilitator wallet (W5R1) is **deployed automatically** on the first settlem
 - Monitor balance via `/health` endpoint
 - The wallet address is deterministic from `FACILITATOR_PRIVATE_KEY`
 
+## Wallet Compatibility
+
+The self-relay mechanism is **wallet-agnostic by design**. The facilitator is just a courier — it wraps the client's signed body in an internal message with TON for gas. The wallet contract itself verifies the signature and executes actions.
+
+**Tested:**
+| Wallet | Opcode | Status |
+|--------|--------|--------|
+| W5R1 (V5 final) | `0x73696e74` | Tested on mainnet |
+| W5Beta (V5 draft) | `0x73696e74` | Same opcode, compatible |
+
+**Compatible but untested:**
+| Wallet | Opcode | Notes |
+|--------|--------|-------|
+| [Agentic Wallet](https://github.com/the-ton-tech/agentic-wallet-contract) | `0x4a3ca895` | Same pattern, different opcode |
+| Any future V5+ wallet | Any | See requirements below |
+
+**Not compatible:** V4R2, V3R2, and older wallets (no `internal_signed` support).
+
+### Adding a New Wallet
+
+Any wallet contract that implements `internal_signed`-style relay is compatible. Requirements:
+
+1. **`recv_internal()` handler** that accepts a signed body from an external sender
+2. **Ed25519 signature at the TAIL** of the body (last 512 bits)
+3. **Signed data = hash of everything before the signature** (standard TON pattern)
+4. **Seqno-based replay protection** (incremented atomically)
+5. **OutList actions** in c5 register format: `[ref:prev] [0x0ec3c86d(32)] [mode(8)] [ref:msg]`
+6. **Silent failure** on invalid signature (return, don't throw — facilitator loses gas but tx doesn't bounce)
+
+The facilitator's verification layer auto-detects the opcode and tries multiple body parsers. Unknown wallet formats fall back to generic action extraction from cell refs.
+
 ## Verification Rules
 
 Every payment goes through 5 checks:
 
 1. **Protocol** — scheme is `exact`, network is `tvm:-239` or `tvm:-3`
-2. **Signature** — Ed25519 verification of the W5 signed BoC (supports both external and internal_signed formats)
-3. **Payment intent** — exactly 1 jetton transfer, amount/destination/asset match, destination verified against on-chain jetton wallet
-4. **Replay protection** — seqno vs on-chain, validUntil range, BoC hash dedup
+2. **Signature** — Ed25519 verification (wallet-agnostic: reads last 512 bits as signature, hashes the rest)
+3. **Payment intent** — exactly 1 jetton transfer, amount/destination/asset match
+4. **Replay protection** — seqno vs on-chain (when parseable), validUntil range, BoC hash dedup
 5. **Simulation** — pre-simulation check (optional, off by default)
 
 ## Project Structure

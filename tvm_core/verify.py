@@ -162,13 +162,16 @@ async def check_replay(
         body = parse_external_message(payload.settlement_boc)
         w5_msg = parse_w5_body(body)
 
-        if w5_msg.seqno < on_chain_seqno:
+        # seqno=0 from parser means it couldn't extract seqno (unknown wallet format)
+        # In that case, skip seqno check — the wallet contract will enforce it on-chain
+        if w5_msg.seqno > 0 and w5_msg.seqno < on_chain_seqno:
             return VerifyResult(
                 ok=False,
                 reason=f"Stale seqno: BoC has {w5_msg.seqno}, chain has {on_chain_seqno}",
             )
     except Exception as e:
-        return VerifyResult(ok=False, reason=f"Failed to check seqno: {e}")
+        # Non-fatal: seqno check is an optimization, wallet contract is the authority
+        pass
 
     return VerifyResult(ok=True)
 

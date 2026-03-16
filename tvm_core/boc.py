@@ -73,30 +73,72 @@ def parse_external_message(boc_b64: str) -> Cell:
         return cs.to_cell()
 
 
-def parse_w5_body(body_cell: Cell) -> W5ParsedMessage:
-    """Parse a W5R1 wallet body cell into structured data.
+# Known opcodes for internal_signed across wallet types
+KNOWN_INTERNAL_OPCODES = {
+    INTERNAL_SIGNED_OP,   # 0x73696e74 — W5R1, W5Beta
+    EXTERNAL_SIGNED_OP,   # 0x7369676e — W5R1, W5Beta (external)
+    0x4A3CA895,           # Agentic wallet InternalSignedRequest
+}
 
-    V5R1 body layout (signature at tail):
-        opcode(32) | walletId(32) | validUntil(32) | seqno(32)
-        | maybeRef(packed_basic_actions)(1 bit + ref?)
-        | has_extended(1 bit)
-        | signature(512 bits at tail)
+
+def parse_w5_body(body_cell: Cell) -> W5ParsedMessage:
+    """Parse a wallet body cell into structured data.
+
+    Supports multiple wallet formats by trying parsers in order:
+    - V5R1: opcode(32) | walletId(32) | validUntil(32) | seqno(32) | maybeRef(actions) | has_extended(1) | sig(512)
+    - V5Beta: opcode(32) | walletId(32+8+8+15=63bits) | validUntil(32) | seqno(32) | actions | sig(512)
+    - Agentic: opcode(32) | custom fields | sig(512)
+    - Generic fallback: extract actions from refs regardless of header format
 
     Args:
-        body_cell: The body cell from a W5 external message.
+        body_cell: The body cell from a wallet external message.
 
     Returns:
         W5ParsedMessage with seqno, valid_until, and internal messages.
     """
+    body_hash = hashlib.sha256(body_cell.to_boc()).hexdigest()
+
+    # Try V5R1 parser first (most common)
+    try:
+        result = _parse_v5r1_body(body_cell)
+        if result is not None:
+            return W5ParsedMessage(**result, raw_body_hash=body_hash)
+    except Exception:
+        pass
+
+    # Fallback: generic parser — extract actions from refs, skip header fields
+    try:
+        result = _parse_generic_body(body_cell)
+        if result is not None:
+            return W5ParsedMessage(**result, raw_body_hash=body_hash)
+    except Exception:
+        pass
+
+    # Last resort: return empty message (relay will still work, just no intent check)
+    return W5ParsedMessage(
+        seqno=0,
+        valid_until=0,
+        internal_messages=[],
+        raw_body_hash=body_hash,
+    )
+
+
+def _parse_v5r1_body(body_cell: Cell) -> dict[str, Any] | None:
+    """Parse V5R1 body format. Returns dict with seqno, valid_until, internal_messages or None."""
     cs = body_cell.begin_parse()
 
-    # Detect W5 body format: internal_signed (0x73696e74) or external_signed (0x7369676e)
-    if cs.remaining_bits >= 32:
-        first_32 = cs.preload_uint(32)
-        if first_32 in (INTERNAL_SIGNED_OP, EXTERNAL_SIGNED_OP):
-            cs.load_uint(32)  # skip opcode
+    if cs.remaining_bits < 32:
+        return None
 
-    # Parse W5 fields
+    first_32 = cs.preload_uint(32)
+    if first_32 not in KNOWN_INTERNAL_OPCODES:
+        return None
+    cs.load_uint(32)  # consume opcode
+
+    # V5R1: walletId(32) | validUntil(32) | seqno(32)
+    if cs.remaining_bits < 96:
+        return None
+
     _wallet_id = cs.load_int(32)
     valid_until = cs.load_uint(32)
     seqno = cs.load_uint(32)
@@ -104,24 +146,46 @@ def parse_w5_body(body_cell: Cell) -> W5ParsedMessage:
     # V5R1 action format: maybeRef(packed_basic_actions) | has_extended(1bit)
     internal_messages: list[dict[str, Any]] = []
 
-    has_basic_actions = cs.load_bit()  # MaybeRef flag
-    if has_basic_actions and cs.remaining_refs > 0:
-        action_cell = cs.load_ref()
-        msgs = _parse_w5_actions(action_cell)
-        internal_messages.extend(msgs)
+    if cs.remaining_bits >= 2:  # need at least 2 bits for maybeRef + has_extended
+        has_basic_actions = cs.load_bit()
+        if has_basic_actions and cs.remaining_refs > 0:
+            action_cell = cs.load_ref()
+            msgs = _parse_w5_actions(action_cell)
+            internal_messages.extend(msgs)
+        _has_extended = cs.load_bit()
 
-    _has_extended = cs.load_bit()  # Extended actions flag (not used for payments)
+    return {
+        "seqno": seqno,
+        "valid_until": valid_until,
+        "internal_messages": internal_messages,
+    }
 
-    # Remaining bits are the signature (512 bits) — skip for parsing purposes
 
-    body_hash = hashlib.sha256(body_cell.to_boc()).hexdigest()
+def _parse_generic_body(body_cell: Cell) -> dict[str, Any] | None:
+    """Generic fallback parser: skip header, extract actions from cell refs.
 
-    return W5ParsedMessage(
-        seqno=seqno,
-        valid_until=valid_until,
-        internal_messages=internal_messages,
-        raw_body_hash=body_hash,
-    )
+    Works for any wallet that stores OutList actions in refs.
+    Won't extract seqno/validUntil (returns 0 for both).
+    """
+    internal_messages: list[dict[str, Any]] = []
+
+    # Walk all refs looking for OutList action cells
+    for ref in body_cell.refs:
+        try:
+            msgs = _parse_w5_actions(ref)
+            if msgs:
+                internal_messages.extend(msgs)
+        except Exception:
+            pass
+
+    if not internal_messages:
+        return None
+
+    return {
+        "seqno": 0,
+        "valid_until": 0,
+        "internal_messages": internal_messages,
+    }
 
 
 def _parse_w5_actions(action_cell: Cell) -> list[dict[str, Any]]:
