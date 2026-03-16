@@ -155,6 +155,36 @@ class W5R1Signer:
 
         return prev_action
 
+    def _store_signing_message(
+        self,
+        builder: Builder,
+        auth_type: str,
+        valid_until: int,
+        seqno: int,
+        actions: Cell | None,
+    ) -> None:
+        """Store the V5R1 signing message fields into a builder.
+
+        V5R1 signing message layout (matches @ton/ton):
+            opcode(32) | walletId(32) | validUntil(32) | seqno(32)
+            | maybeRef(packed_basic_actions) | has_extended(1bit)
+        """
+        if auth_type == "internal":
+            builder.store_uint(INTERNAL_SIGNED_OP, 32)
+        else:
+            builder.store_uint(EXTERNAL_SIGNED_OP, 32)
+        builder.store_int(self._wallet_id, 32)
+        builder.store_uint(valid_until, 32)
+        builder.store_uint(seqno, 32)
+
+        # V5R1 action format: maybeRef(packed_basic_actions) | has_extended(1bit)
+        if actions is not None:
+            builder.store_bit(1)  # has basic actions (MaybeRef = Just)
+            builder.store_ref(actions)
+        else:
+            builder.store_bit(0)  # no basic actions (MaybeRef = Nothing)
+        builder.store_bit(0)  # no extended actions
+
     def sign_transfer(
         self,
         seqno: int,
@@ -179,33 +209,19 @@ class W5R1Signer:
         """
         actions = self._build_actions(messages, send_mode)
 
-        # Build payload cell (the data that gets signed)
-        payload_b = Builder()
-        payload_b.store_int(self._wallet_id, 32)
-        payload_b.store_uint(valid_until, 32)
-        payload_b.store_uint(seqno, 32)
-        payload_b.store_bit(0)  # not extension
-        if actions is not None:
-            payload_b.store_ref(actions)
-        payload_cell = payload_b.end_cell()
+        # Build signing message cell (V5R1: opcode is part of signed data)
+        signing_b = Builder()
+        self._store_signing_message(signing_b, auth_type, valid_until, seqno, actions)
+        signing_cell = signing_b.end_cell()
 
-        # Sign the payload cell hash
-        signed = self._signing_key.sign(payload_cell.hash)
+        # Sign the signing cell hash
+        signed = self._signing_key.sign(signing_cell.hash)
         signature = signed.signature
 
-        # Build body cell — W5R1 requires opcode prefix for both formats
+        # Build body cell: signing_message + signature at TAIL (V5R1 format)
         body_b = Builder()
-        if auth_type == "internal":
-            body_b.store_uint(INTERNAL_SIGNED_OP, 32)  # 0x73696e74
-        else:
-            body_b.store_uint(EXTERNAL_SIGNED_OP, 32)  # 0x7369676e
-        body_b.store_bytes(signature)
-        body_b.store_int(self._wallet_id, 32)
-        body_b.store_uint(valid_until, 32)
-        body_b.store_uint(seqno, 32)
-        body_b.store_bit(0)  # not extension
-        if actions is not None:
-            body_b.store_ref(actions)
+        self._store_signing_message(body_b, auth_type, valid_until, seqno, actions)
+        body_b.store_bytes(signature)  # signature at tail
         body_cell = body_b.end_cell()
 
         # Build external message

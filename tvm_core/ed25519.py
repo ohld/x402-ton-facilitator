@@ -32,30 +32,27 @@ def verify_w5_signature(boc_b64: str, pubkey_hex: str) -> tuple[bool, str]:
 
     body_slice = body.begin_parse()
 
-    # Detect W5 body format: internal_signed (0x73696e74) or external_signed (0x7369676e)
-    if body_slice.remaining_bits >= 32:
-        first_32 = body_slice.preload_uint(32)
-        if first_32 in (INTERNAL_SIGNED_OP, EXTERNAL_SIGNED_OP):
-            body_slice.load_uint(32)  # skip opcode
+    # V5R1 body layout: [signing_message_data...] [signature(512 bits at tail)]
+    # The signature is always the LAST 512 bits of the body cell.
+    total_bits = body_slice.remaining_bits
+    if total_bits < 512:
+        return False, f"Body too short for signature: {total_bits} bits"
 
-    if body_slice.remaining_bits < 512:
-        return False, f"Body too short for signature: {body_slice.remaining_bits} bits"
+    signed_data_bits = total_bits - 512  # everything before the signature
+    refs_count = body_slice.remaining_refs
 
-    signature = body_slice.load_bytes(64)
-
-    # The signed data is the hash of the remaining body content (after the signature).
-    # Reconstruct a cell from the remaining bits and refs to get its hash.
-    signed_bits = body_slice.remaining_bits
-    signed_refs_count = body_slice.remaining_refs
-
+    # Reconstruct the signing message cell (data before signature + all refs)
     from pytoniq_core import Builder
     builder = Builder()
-    if signed_bits > 0:
-        builder.store_bits(body_slice.load_bits(signed_bits))
-    for _ in range(signed_refs_count):
+    if signed_data_bits > 0:
+        builder.store_bits(body_slice.load_bits(signed_data_bits))
+    for _ in range(refs_count):
         builder.store_ref(body_slice.load_ref())
     signed_cell = builder.end_cell()
     signed_data = signed_cell.hash
+
+    # Read signature from the remaining 512 bits
+    signature = body_slice.load_bytes(64)
 
     try:
         verify_key = VerifyKey(bytes.fromhex(pubkey_hex))

@@ -76,15 +76,11 @@ def parse_external_message(boc_b64: str) -> Cell:
 def parse_w5_body(body_cell: Cell) -> W5ParsedMessage:
     """Parse a W5R1 wallet body cell into structured data.
 
-    W5R1 body structure:
-    - 512 bits: Ed25519 signature
-    - 32 bits: wallet_id (subwallet_id)
-    - 32 bits: valid_until
-    - 32 bits: seqno
-    - 1 bit: is_extension
-    - If not extension:
-      - 8 bits: flags (send_mode-like)
-      - Internal messages stored in a hashmap or sequential refs
+    V5R1 body layout (signature at tail):
+        opcode(32) | walletId(32) | validUntil(32) | seqno(32)
+        | maybeRef(packed_basic_actions)(1 bit + ref?)
+        | has_extended(1 bit)
+        | signature(512 bits at tail)
 
     Args:
         body_cell: The body cell from a W5 external message.
@@ -94,36 +90,29 @@ def parse_w5_body(body_cell: Cell) -> W5ParsedMessage:
     """
     cs = body_cell.begin_parse()
 
-    # Detect W5 body format: internal_signed has 0x73696e74 prefix,
-    # external_signed may have 0x7369676e prefix or no prefix (legacy).
+    # Detect W5 body format: internal_signed (0x73696e74) or external_signed (0x7369676e)
     if cs.remaining_bits >= 32:
         first_32 = cs.preload_uint(32)
         if first_32 in (INTERNAL_SIGNED_OP, EXTERNAL_SIGNED_OP):
             cs.load_uint(32)  # skip opcode
-
-    # Skip signature (512 bits = 64 bytes)
-    cs.skip_bits(512)
 
     # Parse W5 fields
     _wallet_id = cs.load_int(32)
     valid_until = cs.load_uint(32)
     seqno = cs.load_uint(32)
 
-    # Parse W5 actions (extensions or messages)
+    # V5R1 action format: maybeRef(packed_basic_actions) | has_extended(1bit)
     internal_messages: list[dict[str, Any]] = []
 
-    is_extension = cs.load_bit()
-    if not is_extension:
-        # Regular messages — load flags + actions
-        if cs.remaining_bits >= 8:
-            _flags = cs.load_uint(8)
+    has_basic_actions = cs.load_bit()  # MaybeRef flag
+    if has_basic_actions and cs.remaining_refs > 0:
+        action_cell = cs.load_ref()
+        msgs = _parse_w5_actions(action_cell)
+        internal_messages.extend(msgs)
 
-        # W5R1 uses a chain of action cells in refs
-        # Each action: send_msg#0ec3c86d mode:uint8 out_msg:^MessageRelaxed
-        while cs.remaining_refs > 0:
-            action_cell = cs.load_ref()
-            msgs = _parse_w5_actions(action_cell)
-            internal_messages.extend(msgs)
+    _has_extended = cs.load_bit()  # Extended actions flag (not used for payments)
+
+    # Remaining bits are the signature (512 bits) — skip for parsing purposes
 
     body_hash = hashlib.sha256(body_cell.to_boc()).hexdigest()
 
