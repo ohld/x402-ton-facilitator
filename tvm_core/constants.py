@@ -31,11 +31,16 @@ SCHEME_EXACT = "exact"
 # Settlement timeout (seconds)
 SETTLEMENT_TIMEOUT = 15
 
-# Default gas amount in nanoTON for self-relay (0.15 TON)
-DEFAULT_GAS_AMOUNT = 150_000_000
+# Default gas amount in nanoTON for self-relay.
+# This covers: user wallet compute (~0.003 TON) + jetton fwd amount (below).
+# TONAPI gasless relay uses ~0.054 TON. We use 0.06 TON with buffer.
+# Real cost per payment: ~0.009 TON; excess stays in user's wallet.
+DEFAULT_GAS_AMOUNT = 60_000_000  # 0.06 TON
 
-# Default TON amount to attach to jetton transfer messages (0.05 TON)
-DEFAULT_JETTON_FWD_AMOUNT = 50_000_000
+# Default TON amount to attach to jetton transfer messages.
+# Covers: jetton_internal_transfer + notification + excess return (~0.002 TON actual).
+# Must be enough for the full jetton chain; excess returns to sender.
+DEFAULT_JETTON_FWD_AMOUNT = 10_000_000  # 0.01 TON
 
 # TONAPI base URLs
 TONAPI_MAINNET_URL = "https://tonapi.io"
