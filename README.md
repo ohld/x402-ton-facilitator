@@ -92,12 +92,15 @@ pytest tests/ -v
 | `TESTNET` | No | Set to `true` for testnet |
 | `PORT` | No | Server port (default: 8402) |
 
-### Gas Wallet Funding
+### Facilitator Wallet Setup
 
-The facilitator wallet needs TON for gas sponsorship:
+The facilitator wallet (W5R1) is **deployed automatically** on the first settlement. No manual deployment needed — just fund the address shown in `/health` and the first `/settle` call deploys the wallet contract and relays the payment in a single transaction.
+
+**Funding:**
 - Each payment costs ~0.05 TON in gas
 - Start with **10 TON** (~200 payments)
 - Monitor balance via `/health` endpoint
+- The wallet address is deterministic from `FACILITATOR_PRIVATE_KEY`
 
 ## Verification Rules
 
