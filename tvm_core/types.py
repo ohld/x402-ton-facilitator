@@ -8,21 +8,13 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
-class SignedW5Message(BaseModel):
-    """A signed W5 internal message (from TONAPI gasless flow)."""
-
-    address: str
-    amount: str
-    payload: str = ""
-    state_init: str | None = Field(default=None, alias="stateInit")
-
-    model_config = {"populate_by_name": True}
-
-
 class TvmPaymentPayload(BaseModel):
     """TON-specific payment payload sent by the client.
 
     The outer x402 PaymentPayload.payload dict is deserialized into this.
+    In the self-relay architecture, the client sends:
+    - A signed W5 internal_signed BoC (wrapped in external message for transport)
+    - Their public key for verification
     """
 
     sender: str = Field(alias="from")
@@ -31,10 +23,29 @@ class TvmPaymentPayload(BaseModel):
     amount: str
     valid_until: int = Field(alias="validUntil")
     nonce: str
-    signed_messages: list[SignedW5Message] = Field(alias="signedMessages")
-    commission: str = "0"
     settlement_boc: str = Field(alias="settlementBoc")
     wallet_public_key: str = Field(alias="walletPublicKey")
+
+    model_config = {"populate_by_name": True}
+
+
+class PrepareRequest(BaseModel):
+    """Request body for /prepare endpoint."""
+
+    wallet_address: str = Field(alias="walletAddress")
+    wallet_public_key: str = Field(alias="walletPublicKey")
+    payment_requirements: dict[str, Any] = Field(alias="paymentRequirements")
+
+    model_config = {"populate_by_name": True}
+
+
+class PrepareResponse(BaseModel):
+    """Response from /prepare — everything the client needs to sign."""
+
+    seqno: int
+    valid_until: int = Field(alias="validUntil")
+    wallet_id: int = Field(alias="walletId")
+    messages: list[dict[str, Any]]
 
     model_config = {"populate_by_name": True}
 

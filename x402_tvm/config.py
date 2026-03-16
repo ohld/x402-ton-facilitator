@@ -4,16 +4,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from tvm_core.constants import DEFAULT_MAX_RELAY_COMMISSION, SUPPORTED_NETWORKS
+from tvm_core.constants import DEFAULT_GAS_AMOUNT, SUPPORTED_NETWORKS
 
 
 @dataclass
 class TvmFacilitatorConfig:
-    """Configuration for the TVM facilitator scheme."""
+    """Configuration for the TVM facilitator scheme.
+
+    The facilitator acts as a self-relay: it holds TON and sponsors gas
+    for user payments. No third-party gasless relay is needed.
+    """
 
     tonapi_key: str | None = None
-    relay_address: str | None = None
-    max_relay_commission: int = DEFAULT_MAX_RELAY_COMMISSION
+    facilitator_private_key: str | None = None  # hex-encoded Ed25519 seed
+    gas_amount: int = DEFAULT_GAS_AMOUNT
     supported_networks: set[str] = field(default_factory=lambda: set(SUPPORTED_NETWORKS))
     testnet: bool = False
     settlement_timeout: int = 15
@@ -23,5 +27,4 @@ class TvmFacilitatorConfig:
 class TvmClientConfig:
     """Configuration for the TVM client scheme."""
 
-    tonapi_key: str | None = None
-    testnet: bool = False
+    facilitator_url: str = "https://ton-facilitator.okhlopkov.com"

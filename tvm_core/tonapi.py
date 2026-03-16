@@ -1,19 +1,25 @@
-"""TONAPI provider — implements TonProvider and TonSettler via tonapi.io REST API."""
+"""TONAPI provider — implements TonProvider via tonapi.io REST API.
+
+Used for:
+- Read operations: seqno, jetton wallet resolution, account state
+- Broadcast: sending signed BoCs to the network
+No gasless relay dependency — the facilitator handles gas sponsorship directly.
+"""
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
 
 from tvm_core.constants import TONAPI_MAINNET_URL, TONAPI_TESTNET_URL
 
+logger = logging.getLogger(__name__)
+
 
 class TonapiProvider:
-    """Combined read + settlement provider backed by TONAPI.
-
-    Implements both ``TonProvider`` and ``TonSettler`` protocols.
-    """
+    """TON provider backed by TONAPI. Implements ``TonProvider`` protocol."""
 
     def __init__(self, api_key: str | None = None, testnet: bool = False) -> None:
         self._base = TONAPI_TESTNET_URL if testnet else TONAPI_MAINNET_URL
@@ -23,7 +29,7 @@ class TonapiProvider:
         self._client = httpx.AsyncClient(base_url=self._base, headers=headers)
 
     # ------------------------------------------------------------------
-    # TonProvider — read operations
+    # Read operations
     # ------------------------------------------------------------------
 
     async def get_seqno(self, address: str) -> int:
@@ -38,7 +44,6 @@ class TonapiProvider:
         )
         resp.raise_for_status()
         stack = resp.json().get("decoded", {})
-        # TONAPI returns decoded slice with the address in raw form
         return stack.get("jetton_wallet_address", stack.get("address", ""))
 
     async def get_account_state(self, address: str) -> dict[str, Any]:
@@ -59,36 +64,16 @@ class TonapiProvider:
         return resp.json()
 
     # ------------------------------------------------------------------
-    # TonSettler — gasless settlement
+    # Broadcast
     # ------------------------------------------------------------------
 
-    async def gasless_estimate(
-        self,
-        wallet_address: str,
-        wallet_public_key: str,
-        jetton_master: str,
-        messages: list[dict[str, Any]],
-    ) -> dict[str, Any]:
+    async def send_boc(self, boc_b64: str) -> bool:
+        """Broadcast a signed BoC to the TON network."""
         resp = await self._client.post(
-            f"/v2/gasless/estimate/{jetton_master}",
-            json={
-                "wallet_address": wallet_address,
-                "wallet_public_key": wallet_public_key,
-                "messages": messages,
-            },
+            "/v2/blockchain/message",
+            json={"boc": boc_b64},
         )
-        resp.raise_for_status()
-        return resp.json()
-
-    async def gasless_send(self, boc: str, wallet_public_key: str) -> str:
-        resp = await self._client.post(
-            "/v2/gasless/send",
-            json={"boc": boc, "wallet_public_key": wallet_public_key},
-        )
-        resp.raise_for_status()
-        return resp.text
-
-    async def get_gasless_config(self) -> dict[str, Any]:
-        resp = await self._client.get("/v2/gasless/config")
-        resp.raise_for_status()
-        return resp.json()
+        if resp.status_code >= 400:
+            logger.error("send_boc failed: %s %s", resp.status_code, resp.text)
+            return False
+        return True

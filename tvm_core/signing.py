@@ -12,7 +12,7 @@ from typing import Any, Callable, Coroutine
 from nacl.signing import SigningKey
 from pytoniq_core import Address, Builder, Cell
 
-from .constants import W5R1_CODE_HASH
+from .constants import INTERNAL_SIGNED_OP, W5R1_CODE_HASH
 
 # W5R1 contract code BOC (from @ton/ton WalletContractV5R1)
 W5R1_CODE_BOC = (
@@ -155,6 +155,7 @@ class W5R1Signer:
         valid_until: int,
         messages: list[dict[str, Any]],
         send_mode: int = DEFAULT_SEND_MODE,
+        auth_type: str = "external",
     ) -> str:
         """Sign a W5R1 transfer and return base64-encoded BoC.
 
@@ -164,6 +165,8 @@ class W5R1Signer:
             messages: List of dicts with keys: address, amount, payload (optional b64 BoC),
                       stateInit (optional b64 BoC).
             send_mode: Send mode for all messages (default: 3).
+            auth_type: "external" (default, for direct broadcast) or
+                       "internal" (for gasless relay / self-relay settlement).
 
         Returns:
             Base64-encoded BoC of the signed external message.
@@ -184,8 +187,10 @@ class W5R1Signer:
         signed = self._signing_key.sign(payload_cell.hash)
         signature = signed.signature
 
-        # Build body cell: 512-bit signature + payload content
+        # Build body cell
         body_b = Builder()
+        if auth_type == "internal":
+            body_b.store_uint(INTERNAL_SIGNED_OP, 32)  # 0x73696e74
         body_b.store_bytes(signature)
         body_b.store_int(self._wallet_id, 32)
         body_b.store_uint(valid_until, 32)

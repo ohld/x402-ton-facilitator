@@ -1,10 +1,14 @@
 """FastAPI facilitator service for TON x402 payments.
 
+Self-relay architecture: the facilitator holds TON and sponsors gas for
+user payments. No third-party gasless relay needed.
+
 Endpoints:
+- POST /prepare  — client calls to get seqno + messages before signing
+- POST /verify   — verify a payment payload (required)
+- POST /settle   — settle a payment on-chain via self-relay (idempotent)
 - GET  /supported — payment kinds this facilitator supports
-- POST /verify    — verify a payment payload
-- POST /settle    — settle a payment on-chain (idempotent)
-- GET  /health    — service health check
+- GET  /health   — service health + facilitator wallet balance
 """
 
 from __future__ import annotations
@@ -17,7 +21,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from tvm_core.constants import SCHEME_EXACT, TVM_MAINNET, TVM_TESTNET
+from tvm_core.constants import SCHEME_EXACT
+from tvm_core.types import PrepareRequest
 
 from . import config as cfg
 from .state import get_facilitator, get_provider
@@ -27,8 +32,8 @@ logger = logging.getLogger("facilitator")
 
 app = FastAPI(
     title="x402 TON Facilitator",
-    description="Verifies and settles x402 payments on TON blockchain",
-    version="0.1.0",
+    description="Verifies and settles x402 payments on TON — self-relay gas sponsorship",
+    version="0.2.0",
 )
 
 START_TIME = time.time()
@@ -41,7 +46,6 @@ class VerifyRequest(BaseModel):
     x402_version: int = Field(alias="x402Version", default=2)
     payment_payload: dict[str, Any] = Field(alias="paymentPayload")
     payment_requirements: dict[str, Any] = Field(alias="paymentRequirements")
-
     model_config = {"populate_by_name": True}
 
 
@@ -49,7 +53,6 @@ class SettleRequest(BaseModel):
     x402_version: int = Field(alias="x402Version", default=2)
     payment_payload: dict[str, Any] = Field(alias="paymentPayload")
     payment_requirements: dict[str, Any] = Field(alias="paymentRequirements")
-
     model_config = {"populate_by_name": True}
 
 
@@ -57,15 +60,11 @@ class SupportedKind(BaseModel):
     x402_version: int = Field(alias="x402Version", default=2)
     scheme: str
     network: str
-    extra: dict[str, Any] | None = None
-
     model_config = {"populate_by_name": True}
 
 
 class SupportedResponse(BaseModel):
     kinds: list[SupportedKind]
-    extensions: list[str] = []
-    signers: dict[str, list[str]] = {}
 
 
 # --- Middleware ---
@@ -76,13 +75,7 @@ async def log_requests(request: Request, call_next):
     start = time.time()
     response = await call_next(request)
     elapsed = (time.time() - start) * 1000
-    logger.info(
-        "%s %s %d %.0fms",
-        request.method,
-        request.url.path,
-        response.status_code,
-        elapsed,
-    )
+    logger.info("%s %s %d %.0fms", request.method, request.url.path, response.status_code, elapsed)
     return response
 
 
@@ -113,51 +106,57 @@ LANDING_HTML = f"""\
   a {{ color: #60a5fa; text-decoration: none; }}
   a:hover {{ text-decoration: underline; }}
   .badge {{ display: inline-block; background: #1a2a1a; color: #4ade80; padding: 0.2rem 0.6rem; border-radius: 4px; font-size: 0.75rem; font-family: monospace; }}
-  .copy-btn {{ background: #222; color: #aaa; border: 1px solid #333; border-radius: 4px; padding: 0.3rem 0.7rem; cursor: pointer; font-size: 0.75rem; float: right; }}
-  .copy-btn:hover {{ background: #333; color: #fff; }}
   .links {{ display: flex; gap: 1rem; flex-wrap: wrap; }}
   .links a {{ background: #141414; border: 1px solid #222; padding: 0.4rem 0.8rem; border-radius: 4px; font-size: 0.85rem; }}
 </style>
 </head>
 <body>
 <h1>x402 TON Facilitator</h1>
-<p class="subtitle">Verify and settle <a href="https://github.com/coinbase/x402">x402</a> payments on TON &mdash; USDT via gasless relay</p>
+<p class="subtitle">Self-relay gas sponsorship for <a href="https://github.com/coinbase/x402">x402</a> payments on TON</p>
+
+<div class="section">
+<h2>Architecture</h2>
+<p style="color:#aaa; font-size:0.85rem;">
+The facilitator acts as both verifier and gas sponsor.
+Clients sign offline, merchants add middleware, the facilitator handles all blockchain interaction.
+Same clean separation as EVM EIP-3009.
+</p>
+</div>
 
 <div class="section">
 <h2>Status</h2>
 <span class="badge">mainnet + testnet</span>
 <span class="badge">tvm:-239</span>
 <span class="badge">tvm:-3</span>
+<span class="badge">self-relay</span>
 </div>
 
 <div class="section">
 <h2>Endpoints</h2>
+<div class="endpoint"><span class="method post">POST</span><span class="path">/prepare</span><span class="desc">get signing data (seqno, messages)</span></div>
+<div class="endpoint"><span class="method post">POST</span><span class="path">/verify</span><span class="desc">verify payment (required)</span></div>
+<div class="endpoint"><span class="method post">POST</span><span class="path">/settle</span><span class="desc">settle on-chain via self-relay</span></div>
 <div class="endpoint"><span class="method">GET</span><span class="path">/supported</span><span class="desc">payment kinds</span></div>
-<div class="endpoint"><span class="method post">POST</span><span class="path">/verify</span><span class="desc">verify payment</span></div>
-<div class="endpoint"><span class="method post">POST</span><span class="path">/settle</span><span class="desc">settle on-chain</span></div>
-<div class="endpoint"><span class="method">GET</span><span class="path">/health</span><span class="desc">service health</span></div>
+<div class="endpoint"><span class="method">GET</span><span class="path">/health</span><span class="desc">service health + wallet balance</span></div>
 <div class="endpoint"><span class="method">GET</span><span class="path">/docs</span><span class="desc">OpenAPI docs</span></div>
 </div>
 
 <div class="section">
-<h2>Agent Prompt</h2>
-<button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('prompt').textContent)">Copy</button>
-<pre id="prompt">Use {FACILITATOR_URL} as the x402 facilitator for TON payments.
-
-To accept USDT payments on TON via x402 protocol:
-1. Install: pip install httpx
-2. Point your x402 resource server's facilitator_url to {FACILITATOR_URL}
-3. Set payment requirements: scheme="exact", network="tvm:-239", asset="0:b113a994b5024a16719f69139328eb759596c38a25f59028b146fecdc3621dfe" (USDT)
-4. The facilitator handles verify + settle via TONAPI gasless relay
-
-Check supported payments: curl {FACILITATOR_URL}/supported
-API docs: {FACILITATOR_URL}/docs
-Source: {GITHUB_URL}</pre>
-</div>
-
-<div class="section">
-<h2>Quick Test</h2>
-<pre>curl {FACILITATOR_URL}/supported | python3 -m json.tool</pre>
+<h2>Flow</h2>
+<pre>Client          Merchant           Facilitator          TON
+  |--- GET /resource -->|                  |                |
+  |<-- 402 + requirements|                 |                |
+  |--- POST /prepare ------------------>|                   |
+  |<-- seqno, messages -----------------| (queries seqno)   |
+  | [sign locally]      |                 |                 |
+  |--- GET /resource + X-PAYMENT -->|     |                 |
+  |                     |-- POST /verify ->|                |
+  |                     |<- is_valid ------|                 |
+  |                     |-- POST /settle ->|                |
+  |                     |                  |-- internal msg -->|
+  |                     |                  |   (TON for gas)   |
+  |                     |<- tx_hash -------|<-- confirmed -----|
+  |<-- 200 + data ------|                  |                   |</pre>
 </div>
 
 <div class="section">
@@ -173,38 +172,30 @@ Source: {GITHUB_URL}</pre>
 </html>
 """
 
-LANDING_JSON = {
-    "name": "x402 TON Facilitator",
-    "description": "Verify and settle x402 payments on TON blockchain (USDT via gasless relay)",
-    "version": "0.1.0",
-    "facilitator_url": FACILITATOR_URL,
-    "networks": ["tvm:-239", "tvm:-3"],
-    "scheme": "exact",
-    "asset": "0:b113a994b5024a16719f69139328eb759596c38a25f59028b146fecdc3621dfe",
-    "asset_symbol": "USDT",
-    "endpoints": {
-        "supported": "GET /supported",
-        "verify": "POST /verify",
-        "settle": "POST /settle",
-        "health": "GET /health",
-        "docs": "GET /docs",
-    },
-    "source": GITHUB_URL,
-    "x402_spec": "https://github.com/coinbase/x402",
-    "ton_spec_pr": "https://github.com/coinbase/x402/pull/1455",
-}
-
 
 # --- Endpoints ---
 
 
 @app.get("/", include_in_schema=False)
 async def landing(request: Request):
-    """Landing page: HTML for browsers, JSON for agents."""
     accept = request.headers.get("accept", "")
     if "text/html" in accept:
         return HTMLResponse(LANDING_HTML)
-    return LANDING_JSON
+    return {
+        "name": "x402 TON Facilitator",
+        "version": "0.2.0",
+        "architecture": "self-relay",
+        "facilitator_url": FACILITATOR_URL,
+        "networks": ["tvm:-239", "tvm:-3"],
+        "endpoints": {
+            "prepare": "POST /prepare",
+            "verify": "POST /verify",
+            "settle": "POST /settle",
+            "supported": "GET /supported",
+            "health": "GET /health",
+        },
+        "source": GITHUB_URL,
+    }
 
 
 @app.get("/supported")
@@ -212,74 +203,98 @@ async def supported() -> SupportedResponse:
     """Return payment kinds this facilitator supports."""
     facilitator = get_facilitator()
     networks = list(facilitator._config.supported_networks)
-
-    kinds = []
-    for network in networks:
-        extra = facilitator.get_extra(network)
-        kinds.append(
-            SupportedKind(
-                x402Version=2,
-                scheme=SCHEME_EXACT,
-                network=network,
-                extra=extra,
-            )
-        )
-
+    kinds = [
+        SupportedKind(x402Version=2, scheme=SCHEME_EXACT, network=n)
+        for n in networks
+    ]
     return SupportedResponse(kinds=kinds)
+
+
+@app.post("/prepare")
+async def prepare(request: PrepareRequest) -> JSONResponse:
+    """Prepare signing data for a client.
+
+    Returns seqno, validUntil, walletId, and messages to sign.
+    The client signs with authType='internal' and sends the BoC back.
+    """
+    facilitator = get_facilitator()
+    try:
+        result = await facilitator.prepare(
+            wallet_address=request.wallet_address,
+            wallet_public_key=request.wallet_public_key,
+            requirements=request.payment_requirements,
+        )
+        return JSONResponse(content=result)
+    except Exception as e:
+        logger.error("Prepare failed: %s", e)
+        return JSONResponse(
+            content={"error": str(e)},
+            status_code=400,
+        )
 
 
 @app.post("/verify")
 async def verify(request: VerifyRequest) -> JSONResponse:
-    """Verify a payment payload."""
+    """Verify a payment payload. Required before settlement."""
     facilitator = get_facilitator()
-
-    # Extract the inner payload dict
     payload_dict = request.payment_payload
     inner_payload = payload_dict.get("payload", payload_dict)
-
     requirements = request.payment_requirements
 
     result = await facilitator.verify(inner_payload, requirements)
-
     status_code = 200 if result["is_valid"] else 400
     return JSONResponse(content=result, status_code=status_code)
 
 
 @app.post("/settle")
 async def settle(request: SettleRequest) -> JSONResponse:
-    """Settle a payment on-chain. Idempotent."""
+    """Settle a payment on-chain via self-relay. Idempotent."""
     facilitator = get_facilitator()
-
     payload_dict = request.payment_payload
     inner_payload = payload_dict.get("payload", payload_dict)
-
     requirements = request.payment_requirements
 
     result = await facilitator.settle(inner_payload, requirements)
-
     status_code = 200 if result["success"] else 400
     return JSONResponse(content=result, status_code=status_code)
 
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    """Health check with uptime and provider status."""
+    """Health check with uptime, provider status, and facilitator wallet balance."""
     uptime = time.time() - START_TIME
+    facilitator = get_facilitator()
 
     provider_ok = False
+    wallet_balance = None
+    wallet_address = None
+
     try:
         provider = get_provider()
-        # Quick connectivity check — get gasless config
-        config = await provider.get_gasless_config()
-        provider_ok = "relay_address" in config or "relayAddress" in config
+        # Quick connectivity check
+        state = await provider.get_account_state(
+            "0:0000000000000000000000000000000000000000000000000000000000000000"
+        )
+        provider_ok = True
     except Exception as e:
         logger.warning("Provider health check failed: %s", e)
+
+    if facilitator.relay:
+        wallet_address = facilitator.relay.address
+        try:
+            balance = await facilitator.relay.get_balance()
+            wallet_balance = f"{balance / 1e9:.4f} TON"
+        except Exception:
+            wallet_balance = "unknown"
 
     return {
         "status": "ok" if provider_ok else "degraded",
         "uptime_seconds": round(uptime),
+        "architecture": "self-relay",
         "provider": "tonapi",
         "provider_ok": provider_ok,
         "testnet": cfg.TESTNET,
-        "version": "0.1.0",
+        "version": "0.2.0",
+        "facilitator_wallet": wallet_address,
+        "facilitator_balance": wallet_balance,
     }

@@ -14,6 +14,10 @@ USDT_MASTER = "0:b113a994b5024a16719f69139328eb759596c38a25f59028b146fecdc3621df
 # Jetton transfer opcode (TEP-74)
 JETTON_TRANSFER_OP = 0x0F8A7EA5
 
+# W5 message opcodes
+INTERNAL_SIGNED_OP = 0x73696E74  # "sint" — W5 internal_signed
+EXTERNAL_SIGNED_OP = 0x7369676E  # "sign" — W5 external_signed
+
 # W5 (Wallet v5r1) code hash — used to verify wallet contracts
 # Base64-encoded hash of the W5R1 contract code
 W5R1_CODE_HASH = "IINLe3KxEhR+Gy+0V7hOdNGjDwT3N9T2KmaOlVLSty8="
@@ -27,8 +31,11 @@ SCHEME_EXACT = "exact"
 # Settlement timeout (seconds)
 SETTLEMENT_TIMEOUT = 15
 
-# Default max relay commission in USDT nano units (0.5 USDT = 500000)
-DEFAULT_MAX_RELAY_COMMISSION = 500_000
+# Default gas amount in nanoTON for self-relay (0.15 TON)
+DEFAULT_GAS_AMOUNT = 150_000_000
+
+# Default TON amount to attach to jetton transfer messages (0.05 TON)
+DEFAULT_JETTON_FWD_AMOUNT = 50_000_000
 
 # TONAPI base URLs
 TONAPI_MAINNET_URL = "https://tonapi.io"

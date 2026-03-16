@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from tvm_core.state import PaymentStateStore
 from tvm_core.tonapi import TonapiProvider
 from x402_tvm.config import TvmFacilitatorConfig
 from x402_tvm.exact.facilitator import ExactTvmFacilitatorScheme
 
 from . import config as cfg
 
-# Provider instance (created on startup)
 _provider: TonapiProvider | None = None
 _facilitator: ExactTvmFacilitatorScheme | None = None
 
@@ -31,14 +29,13 @@ def get_facilitator() -> ExactTvmFacilitatorScheme:
         networks = set(n.strip() for n in cfg.SUPPORTED_NETWORKS.split(","))
         fac_config = TvmFacilitatorConfig(
             tonapi_key=cfg.TONAPI_KEY or None,
-            relay_address=cfg.RELAY_ADDRESS or None,
-            max_relay_commission=cfg.MAX_RELAY_COMMISSION,
+            facilitator_private_key=cfg.FACILITATOR_PRIVATE_KEY or None,
+            gas_amount=cfg.GAS_AMOUNT,
             supported_networks=networks,
             testnet=cfg.TESTNET,
         )
         _facilitator = ExactTvmFacilitatorScheme(
             provider=provider,
-            settler=provider,  # TonapiProvider implements both protocols
             config=fac_config,
         )
     return _facilitator

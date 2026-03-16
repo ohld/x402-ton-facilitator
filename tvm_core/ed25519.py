@@ -8,7 +8,7 @@ from nacl.exceptions import BadSignatureError
 from nacl.signing import VerifyKey
 from pytoniq_core import Cell
 
-from tvm_core.constants import W5R1_CODE_HASH
+from tvm_core.constants import INTERNAL_SIGNED_OP, EXTERNAL_SIGNED_OP, W5R1_CODE_HASH
 
 
 def verify_w5_signature(boc_b64: str, pubkey_hex: str) -> tuple[bool, str]:
@@ -33,6 +33,12 @@ def verify_w5_signature(boc_b64: str, pubkey_hex: str) -> tuple[bool, str]:
     # In standard serialization the body is stored as a ref when it doesn't fit inline.
     body = cell.refs[0] if cell.refs else cell
     body_slice = body.begin_parse()
+
+    # Detect W5 body format: internal_signed (0x73696e74) or external_signed (0x7369676e)
+    if body_slice.remaining_bits >= 32:
+        first_32 = body_slice.preload_uint(32)
+        if first_32 in (INTERNAL_SIGNED_OP, EXTERNAL_SIGNED_OP):
+            body_slice.load_uint(32)  # skip opcode
 
     if body_slice.remaining_bits < 512:
         return False, f"Body too short for signature: {body_slice.remaining_bits} bits"

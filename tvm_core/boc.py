@@ -14,7 +14,7 @@ from typing import Any
 
 from pytoniq_core import Address, Cell
 
-from .constants import JETTON_TRANSFER_OP, MAX_BOC_SIZE
+from .constants import INTERNAL_SIGNED_OP, EXTERNAL_SIGNED_OP, JETTON_TRANSFER_OP, MAX_BOC_SIZE
 from .types import JettonTransferInfo, W5ParsedMessage
 
 
@@ -93,6 +93,13 @@ def parse_w5_body(body_cell: Cell) -> W5ParsedMessage:
         W5ParsedMessage with seqno, valid_until, and internal messages.
     """
     cs = body_cell.begin_parse()
+
+    # Detect W5 body format: internal_signed has 0x73696e74 prefix,
+    # external_signed may have 0x7369676e prefix or no prefix (legacy).
+    if cs.remaining_bits >= 32:
+        first_32 = cs.preload_uint(32)
+        if first_32 in (INTERNAL_SIGNED_OP, EXTERNAL_SIGNED_OP):
+            cs.load_uint(32)  # skip opcode
 
     # Skip signature (512 bits = 64 bytes)
     cs.skip_bits(512)
