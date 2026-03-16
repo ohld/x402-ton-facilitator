@@ -172,16 +172,18 @@ class ExactTvmFacilitatorScheme:
                 "payer": payer,
             }
 
-        # Verify first (required, not optional)
-        verify_result = await self.verify(payload, requirements)
-        if not verify_result["is_valid"]:
-            return {
-                "success": False,
-                "error_reason": verify_result.get("invalid_reason", "Verification failed"),
-                "payer": payer,
-                "transaction": "",
-                "network": network,
-            }
+        # Skip re-verification if already verified (e.g., separate /verify call)
+        record = self._state_store.get(boc_hash)
+        if not record or record.state != PaymentState.VERIFIED:
+            verify_result = await self.verify(payload, requirements)
+            if not verify_result["is_valid"]:
+                return {
+                    "success": False,
+                    "error_reason": verify_result.get("invalid_reason", "Verification failed"),
+                    "payer": payer,
+                    "transaction": "",
+                    "network": network,
+                }
 
         record = self._state_store.get_or_create(boc_hash, payer=payer)
         try:
