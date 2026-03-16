@@ -64,6 +64,24 @@ class TonapiProvider:
         return resp.json()
 
     # ------------------------------------------------------------------
+    # Emulation
+    # ------------------------------------------------------------------
+
+    async def emulate(self, boc_b64: str) -> dict[str, Any] | None:
+        """Emulate a transaction to estimate gas fees.
+
+        Returns the trace with per-hop fees, or None on failure.
+        """
+        resp = await self._client.post(
+            "/v2/wallet/emulate",
+            json={"boc": boc_b64},
+        )
+        if resp.status_code >= 400:
+            logger.warning("emulate failed: %s %s", resp.status_code, resp.text[:200])
+            return None
+        return resp.json()
+
+    # ------------------------------------------------------------------
     # Broadcast
     # ------------------------------------------------------------------
 

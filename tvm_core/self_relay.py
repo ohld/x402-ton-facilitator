@@ -124,6 +124,58 @@ class SelfRelay:
             ],
         }
 
+    def _build_relay_boc(
+        self,
+        body_boc: str,
+        user_raw: str,
+        fac_seqno: int,
+        gas_amount: int,
+    ) -> str:
+        """Build the facilitator's relay external message."""
+        relay_msg = {
+            "address": user_raw,
+            "amount": str(gas_amount),
+            "payload": body_boc,
+        }
+        fac_valid_until = int(time.time()) + 120
+        return self._signer.sign_transfer(
+            seqno=fac_seqno,
+            valid_until=fac_valid_until,
+            messages=[relay_msg],
+            auth_type="external",
+        )
+
+    async def _estimate_gas(
+        self,
+        body_boc: str,
+        user_raw: str,
+        fac_seqno: int,
+    ) -> int | None:
+        """Estimate gas by emulating the relay tx. Returns nanoTON or None."""
+        # Build with default gas for emulation
+        trial_boc = self._build_relay_boc(body_boc, user_raw, fac_seqno, self._gas_amount)
+
+        emulation = await self._provider.emulate(trial_boc)
+        if emulation is None:
+            return None
+
+        # Sum all fees across the trace
+        total_fees = 0
+        def walk(node: dict) -> None:
+            nonlocal total_fees
+            tx = node.get("transaction", {})
+            total_fees += tx.get("total_fees", 0)
+            for child in node.get("children", []):
+                walk(child)
+
+        walk(emulation.get("trace", {}))
+
+        if total_fees <= 0:
+            return None
+
+        # Add 50% buffer for safety (gas prices can fluctuate between emulation and broadcast)
+        return int(total_fees * 1.5)
+
     async def relay(
         self,
         signed_external_boc: str,
@@ -131,49 +183,26 @@ class SelfRelay:
     ) -> str:
         """Relay a user's signed W5 message by sponsoring gas.
 
-        Extracts the internal_signed body from the client's external message,
-        wraps it in an internal message from the facilitator's wallet,
-        and broadcasts it.
-
-        Args:
-            signed_external_boc: Base64-encoded BoC of the client's signed
-                external message (contains internal_signed body).
-            user_wallet_address: Client's W5 wallet address (raw format).
-
-        Returns:
-            BoC hash of the submitted message (for tracking).
-
-        Raises:
-            ValueError: If the BoC is malformed.
-            RuntimeError: If broadcast fails.
+        Uses TONAPI emulation to estimate precise gas, falling back
+        to the default gas_amount if emulation fails.
         """
-        # Extract the body cell from the external message wrapper
         body_cell = parse_external_message(signed_external_boc)
         body_boc = base64.b64encode(body_cell.to_boc()).decode()
-
         user_raw = normalize_address(user_wallet_address)
-
-        # Build the internal message from facilitator to user's W5 wallet
-        # The body is the user's internal_signed request
-        relay_msg = {
-            "address": user_raw,
-            "amount": str(self._gas_amount),
-            "payload": body_boc,
-        }
-
-        # Get facilitator's seqno
         fac_seqno = await self._provider.get_seqno(self._signer.address)
-        fac_valid_until = int(time.time()) + 120  # 2 min for facilitator tx
 
-        # Sign and build the facilitator's external message
-        fac_boc = self._signer.sign_transfer(
-            seqno=fac_seqno,
-            valid_until=fac_valid_until,
-            messages=[relay_msg],
-            auth_type="external",  # facilitator sends normal external message
+        # Try emulation-based gas estimation
+        estimated_gas = await self._estimate_gas(body_boc, user_raw, fac_seqno)
+        gas_amount = estimated_gas if estimated_gas else self._gas_amount
+
+        logger.info(
+            "Gas estimate: %s nanoTON (%s)",
+            gas_amount,
+            "emulated" if estimated_gas else "default fallback",
         )
 
-        # Broadcast
+        fac_boc = self._build_relay_boc(body_boc, user_raw, fac_seqno, gas_amount)
+
         ok = await self._provider.send_boc(fac_boc)
         if not ok:
             raise RuntimeError("Failed to broadcast relay message")
@@ -182,7 +211,7 @@ class SelfRelay:
             "Relayed payment: user=%s fac_seqno=%d gas=%d",
             user_raw[:20],
             fac_seqno,
-            self._gas_amount,
+            gas_amount,
         )
 
-        return fac_boc[:16]  # return a tracking ID
+        return fac_boc[:16]
