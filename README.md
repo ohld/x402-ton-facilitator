@@ -5,6 +5,19 @@ Verifies and settles [x402](https://github.com/coinbase/x402) payments on TON bl
 **Live:** https://ton-facilitator.okhlopkov.com
 **Spec PR:** [coinbase/x402#1455](https://github.com/coinbase/x402/pull/1455)
 
+### Mainnet Proof
+
+Real USDT payments on TON mainnet via self-relay:
+
+| # | Gas | TX |
+|---|-----|-----|
+| 1 | 0.06 TON | [tonviewer](https://tonviewer.com/transaction/5517a3a85a05cfa90b9469d5e030c05d5bce4eb67d3c16ab39e44696a68b98f3) |
+| 2 | 0.06 TON | [tonviewer](https://tonviewer.com/transaction/2cd7e5cbcdf65b00e41e06b1647edc1398598057f6f79091b743df9894bca141) |
+| 3 | 0.06 TON | [tonviewer](https://tonviewer.com/transaction/10672d6411e4b0c54c4c43f2fdd71b30ffc7b9794e4806a36265ea2c726fbca2) |
+
+Facilitator wallet: [`UQAqn8F5nDx8ZvQut25e33uzcBioLLreha4yYujGdrIuHzXX`](https://tonviewer.com/UQAqn8F5nDx8ZvQut25e33uzcBioLLreha4yYujGdrIuHzXX)
+Cost per payment: ~0.065 TON (0.06 gas + 0.005 broadcast). Client pays 0 TON.
+
 ## Architecture: Self-Relay
 
 The facilitator acts as both **verifier** and **gas sponsor**. Like EVM's EIP-3009 flow, the client only signs — all blockchain interaction happens in the facilitator.
@@ -42,7 +55,7 @@ Client              Merchant              Facilitator              TON
   |                    |<-- is_valid ---------|                      |
   |                    |--- POST /settle ---->|                      |
   |                    |                      |--- internal msg ---->|
-  |                    |                      |    (0.15 TON gas)    |
+  |                    |                      |    (0.06 TON gas)    |
   |                    |<-- tx_hash ----------|<--- confirmed -------|
   |<-- 200 + data -----|                      |                      |
 ```
@@ -52,7 +65,7 @@ Client              Merchant              Facilitator              TON
 1. Client signs a W5 `internal_signed` message (opcode `0x73696e74`) containing one jetton transfer
 2. Facilitator receives the signed BoC, verifies signature + payment intent
 3. Facilitator wraps the signed body in an **internal message** from its own wallet to the user's W5 wallet
-4. Facilitator attaches 0.15 TON for gas and broadcasts
+4. Facilitator attaches 0.06 TON for gas and broadcasts
 5. User's W5 wallet verifies the signature and executes the jetton transfer
 6. Merchant receives USDT, user never needed TON for gas
 
@@ -88,7 +101,7 @@ pytest tests/ -v
 |----------|----------|-------------|
 | `TONAPI_KEY` | Recommended | TONAPI key for higher rate limits |
 | `FACILITATOR_PRIVATE_KEY` | For settlement | Hex-encoded Ed25519 seed (32 bytes = 64 hex chars) |
-| `GAS_AMOUNT` | No | nanoTON per relay (default: 150000000 = 0.15 TON) |
+| `GAS_AMOUNT` | No | nanoTON per relay (default: 60000000 = 0.06 TON) |
 | `TESTNET` | No | Set to `true` for testnet |
 | `PORT` | No | Server port (default: 8402) |
 
@@ -97,8 +110,8 @@ pytest tests/ -v
 The facilitator wallet (W5R1) is **deployed automatically** on the first settlement. No manual deployment needed — just fund the address shown in `/health` and the first `/settle` call deploys the wallet contract and relays the payment in a single transaction.
 
 **Funding:**
-- Each payment costs ~0.05 TON in gas
-- Start with **10 TON** (~200 payments)
+- Each payment costs ~0.065 TON (0.06 gas + broadcast fees)
+- Start with **10 TON** (~150 payments)
 - Monitor balance via `/health` endpoint
 - The wallet address is deterministic from `FACILITATOR_PRIVATE_KEY`
 
