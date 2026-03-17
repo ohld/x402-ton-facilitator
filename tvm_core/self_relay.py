@@ -175,8 +175,8 @@ class SelfRelay:
         if total_fees <= 0:
             return None
 
-        # Add 50% buffer for safety (gas prices can fluctuate between emulation and broadcast)
-        return int(total_fees * 1.5)
+        # Emulation already returns worst-case fees; no extra buffer needed
+        return total_fees
 
     @staticmethod
     def _detect_opcode(body_cell: Cell) -> int | None:
