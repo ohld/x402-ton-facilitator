@@ -97,8 +97,8 @@ class ExactTvmFacilitatorScheme:
             tvm_payload = TvmPaymentPayload.model_validate(payload)
         except Exception as e:
             return {
-                "is_valid": False,
-                "invalid_reason": f"Invalid payload: {e}",
+                "isValid": False,
+                "invalidReason": f"Invalid payload: {e}",
                 "payer": None,
             }
 
@@ -127,8 +127,8 @@ class ExactTvmFacilitatorScheme:
                 record.transition(PaymentState.VERIFIED)
 
         return {
-            "is_valid": result.ok,
-            "invalid_reason": result.reason if not result.ok else None,
+            "isValid": result.ok,
+            "invalidReason": result.reason if not result.ok else None,
             "payer": payer,
         }
 
@@ -143,7 +143,7 @@ class ExactTvmFacilitatorScheme:
         except Exception as e:
             return {
                 "success": False,
-                "error_reason": f"Invalid payload: {e}",
+                "errorReason": f"Invalid payload: {e}",
                 "payer": None,
                 "transaction": "",
                 "network": "",
@@ -152,7 +152,7 @@ class ExactTvmFacilitatorScheme:
         if not self._relay:
             return {
                 "success": False,
-                "error_reason": "Facilitator private key not configured — cannot settle",
+                "errorReason": "Facilitator private key not configured — cannot settle",
                 "payer": tvm_payload.sender,
                 "transaction": "",
                 "network": str(requirements.get("network", "")),
@@ -176,10 +176,10 @@ class ExactTvmFacilitatorScheme:
         record = self._state_store.get(boc_hash)
         if not record or record.state != PaymentState.VERIFIED:
             verify_result = await self.verify(payload, requirements)
-            if not verify_result["is_valid"]:
+            if not verify_result["isValid"]:
                 return {
                     "success": False,
-                    "error_reason": verify_result.get("invalid_reason", "Verification failed"),
+                    "errorReason": verify_result.get("invalidReason", "Verification failed"),
                     "payer": payer,
                     "transaction": "",
                     "network": network,
@@ -227,7 +227,7 @@ class ExactTvmFacilitatorScheme:
 
             return {
                 "success": False,
-                "error_reason": f"Settlement failed: {e}",
+                "errorReason": f"Settlement failed: {e}",
                 "payer": payer,
                 "transaction": "",
                 "network": network,

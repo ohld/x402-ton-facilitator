@@ -132,10 +132,10 @@ class TestE2EMainnet:
             "paymentRequirements": requirements,
         })
         verify_data = verify_resp.json()
-        print(f"      Valid: {verify_data.get('is_valid')}")
-        if not verify_data.get("is_valid"):
-            print(f"      Reason: {verify_data.get('invalid_reason')}")
-        assert verify_data["is_valid"], f"verify failed: {verify_data}"
+        print(f"      Valid: {verify_data.get('isValid')}")
+        if not verify_data.get("isValid"):
+            print(f"      Reason: {verify_data.get('invalidReason')}")
+        assert verify_data["isValid"], f"verify failed: {verify_data}"
 
         # Step 4: Settle
         print("  [4] Calling /settle (self-relay, sponsoring gas)...")
@@ -148,7 +148,7 @@ class TestE2EMainnet:
         print(f"      Success: {settle_data.get('success')}")
         print(f"      TX: {settle_data.get('transaction')}")
         if not settle_data.get("success"):
-            print(f"      Error: {settle_data.get('error_reason')}")
+            print(f"      Error: {settle_data.get('errorReason')}")
         assert settle_data["success"], f"settle failed: {settle_data}"
 
         print(f"\n  === PAYMENT SETTLED ===")

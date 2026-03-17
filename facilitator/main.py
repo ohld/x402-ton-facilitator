@@ -199,7 +199,7 @@ async def landing(request: Request):
 
 
 @app.get("/supported")
-async def supported() -> SupportedResponse:
+async def supported() -> JSONResponse:
     """Return payment kinds this facilitator supports."""
     facilitator = get_facilitator()
     networks = list(facilitator._config.supported_networks)
@@ -207,7 +207,8 @@ async def supported() -> SupportedResponse:
         SupportedKind(x402Version=2, scheme=SCHEME_EXACT, network=n)
         for n in networks
     ]
-    return SupportedResponse(kinds=kinds)
+    resp = SupportedResponse(kinds=kinds)
+    return JSONResponse(content=resp.model_dump(by_alias=True))
 
 
 @app.post("/prepare")
@@ -242,7 +243,7 @@ async def verify(request: VerifyRequest) -> JSONResponse:
     requirements = request.payment_requirements
 
     result = await facilitator.verify(inner_payload, requirements)
-    status_code = 200 if result["is_valid"] else 400
+    status_code = 200 if result["isValid"] else 400
     return JSONResponse(content=result, status_code=status_code)
 
 
