@@ -22,7 +22,7 @@ class TvmPaymentPayload(BaseModel):
     token_master: str = Field(alias="tokenMaster")
     amount: str
     valid_until: int = Field(alias="validUntil")
-    nonce: str
+    nonce: str = ""  # deprecated, kept for backward compatibility
     settlement_boc: str = Field(alias="settlementBoc")
     wallet_public_key: str = Field(alias="walletPublicKey")
 

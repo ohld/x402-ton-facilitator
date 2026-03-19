@@ -76,7 +76,6 @@ class ExactTvmClientScheme:
             "tokenMaster": asset,
             "amount": amount,
             "validUntil": prepare_data["validUntil"],
-            "nonce": secrets.token_hex(16),
             "settlementBoc": settlement_boc,
             "walletPublicKey": self._public_key,
         }
