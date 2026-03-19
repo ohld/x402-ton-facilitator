@@ -109,6 +109,7 @@ class ExactTvmFacilitatorScheme:
         required_asset = str(requirements.get("asset", ""))
         payer = tvm_payload.sender
 
+        fac_address = self._relay.address if self._relay else None
         result = await verify_payment(
             payload=tvm_payload,
             scheme=scheme,
@@ -118,6 +119,7 @@ class ExactTvmFacilitatorScheme:
             required_asset=required_asset,
             provider=self._provider,
             config=self._verify_config,
+            facilitator_address=fac_address,
         )
 
         if result.ok:
@@ -172,18 +174,16 @@ class ExactTvmFacilitatorScheme:
                 "payer": payer,
             }
 
-        # Skip re-verification if already verified (e.g., separate /verify call)
-        record = self._state_store.get(boc_hash)
-        if not record or record.state != PaymentState.VERIFIED:
-            verify_result = await self.verify(payload, requirements)
-            if not verify_result["isValid"]:
-                return {
-                    "success": False,
-                    "errorReason": verify_result.get("invalidReason", "Verification failed"),
-                    "payer": payer,
-                    "transaction": "",
-                    "network": network,
-                }
+        # Always re-verify before settlement (spec: MUST NOT trust prior /verify)
+        verify_result = await self.verify(payload, requirements)
+        if not verify_result["isValid"]:
+            return {
+                "success": False,
+                "errorReason": verify_result.get("invalidReason", "Verification failed"),
+                "payer": payer,
+                "transaction": "",
+                "network": network,
+            }
 
         record = self._state_store.get_or_create(boc_hash, payer=payer)
         try:

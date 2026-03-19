@@ -67,6 +67,7 @@ async def check_payment_intent(
     required_pay_to: str,
     required_asset: str,
     provider: TonProvider,
+    facilitator_address: str | None = None,
 ) -> VerifyResult:
     """Rule 3: Verify jetton transfer amount, destination, and asset.
 
@@ -85,10 +86,23 @@ async def check_payment_intent(
             reason=f"Token mismatch: expected {asset_norm}, got {token_master_norm}",
         )
 
-    if int(payload.amount) < int(required_amount):
+    # Facilitator safety: sender must not be the facilitator itself
+    if facilitator_address:
+        try:
+            fac_norm = normalize_address(facilitator_address)
+            sender_norm = normalize_address(payload.sender)
+            if sender_norm == fac_norm:
+                return VerifyResult(
+                    ok=False,
+                    reason="Facilitator address must not appear as payment sender",
+                )
+        except ValueError:
+            pass
+
+    if int(payload.amount) != int(required_amount):
         return VerifyResult(
             ok=False,
-            reason=f"Insufficient amount: expected {required_amount}, got {payload.amount}",
+            reason=f"Amount mismatch: expected {required_amount}, got {payload.amount}",
         )
 
     # Parse the BoC to verify the actual transfer destination
@@ -113,7 +127,7 @@ async def check_payment_intent(
             if transfer.destination:
                 transfer_dest_norm = normalize_address(transfer.destination)
                 if transfer_dest_norm == pay_to_norm:
-                    if transfer.amount >= int(required_amount):
+                    if transfer.amount == int(required_amount):
                         found_valid_transfer = True
 
         if not found_valid_transfer:
@@ -129,6 +143,32 @@ async def check_payment_intent(
                 reason=f"Expected 1 jetton transfer, found {jetton_transfer_count}",
             )
 
+        # Verify jetton wallet address via on-chain getter (skywardboundd check):
+        # The internal message destination must match get_wallet_address(payTo) on the master
+        for msg in w5_msg.internal_messages:
+            body_cell = msg.get("body")
+            if body_cell is None:
+                continue
+            transfer = extract_jetton_transfer(body_cell)
+            if transfer and transfer.jetton_wallet:
+                try:
+                    expected_wallet = await provider.get_jetton_wallet(
+                        asset_norm, pay_to_norm
+                    )
+                    expected_wallet_norm = normalize_address(expected_wallet)
+                    actual_wallet_norm = normalize_address(transfer.jetton_wallet)
+                    if actual_wallet_norm != expected_wallet_norm:
+                        return VerifyResult(
+                            ok=False,
+                            reason=(
+                                f"Jetton wallet mismatch: BoC targets {actual_wallet_norm}, "
+                                f"but get_wallet_address returns {expected_wallet_norm}"
+                            ),
+                        )
+                except Exception:
+                    # Non-fatal: if RPC fails, the on-chain execution will catch it
+                    pass
+
     except Exception as e:
         return VerifyResult(ok=False, reason=f"Failed to parse payment BoC: {e}")
 
@@ -138,6 +178,7 @@ async def check_payment_intent(
 async def check_replay(
     payload: TvmPaymentPayload,
     provider: TonProvider,
+    cfg: VerifyConfig | None = None,
 ) -> VerifyResult:
     """Rule 4: Check for replay attacks."""
     now = int(time.time())
@@ -145,10 +186,11 @@ async def check_replay(
     if payload.valid_until < now:
         return VerifyResult(ok=False, reason="Payment expired")
 
-    if payload.valid_until > now + 600:  # 10 min max
+    max_seconds = cfg.max_valid_until_seconds if cfg else 600
+    if payload.valid_until > now + max_seconds:
         return VerifyResult(
             ok=False,
-            reason=f"validUntil too far in future: {payload.valid_until - now}s from now",
+            reason=f"validUntil too far in future: {payload.valid_until - now}s from now (max {max_seconds}s)",
         )
 
     boc_hash = compute_boc_hash(payload.settlement_boc)
@@ -198,6 +240,7 @@ async def verify_payment(
     required_asset: str,
     provider: TonProvider,
     config: VerifyConfig | None = None,
+    facilitator_address: str | None = None,
 ) -> VerifyResult:
     """Run all verification rules on a payment.
 
@@ -214,12 +257,13 @@ async def verify_payment(
         return result
 
     result = await check_payment_intent(
-        payload, required_amount, required_pay_to, required_asset, provider
+        payload, required_amount, required_pay_to, required_asset, provider,
+        facilitator_address=facilitator_address,
     )
     if not result.ok:
         return result
 
-    result = await check_replay(payload, provider)
+    result = await check_replay(payload, provider, cfg)
     if not result.ok:
         return result
 
