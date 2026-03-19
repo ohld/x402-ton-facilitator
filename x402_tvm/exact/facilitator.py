@@ -109,6 +109,16 @@ class ExactTvmFacilitatorScheme:
         required_asset = str(requirements.get("asset", ""))
         payer = tvm_payload.sender
 
+        # Per-request config: use maxTimeoutSeconds from requirements if provided
+        verify_config = self._verify_config
+        max_timeout = requirements.get("maxTimeoutSeconds")
+        if max_timeout is not None:
+            verify_config = VerifyConfig(
+                supported_networks=self._verify_config.supported_networks,
+                skip_simulation=self._verify_config.skip_simulation,
+                max_valid_until_seconds=int(max_timeout),
+            )
+
         fac_address = self._relay.address if self._relay else None
         result = await verify_payment(
             payload=tvm_payload,
@@ -118,7 +128,7 @@ class ExactTvmFacilitatorScheme:
             required_pay_to=required_pay_to,
             required_asset=required_asset,
             provider=self._provider,
-            config=self._verify_config,
+            config=verify_config,
             facilitator_address=fac_address,
         )
 
