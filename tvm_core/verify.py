@@ -105,6 +105,17 @@ async def check_payment_intent(
             reason=f"Amount mismatch: expected {required_amount}, got {payload.amount}",
         )
 
+    # Verify payload.to matches required payTo (explicit metadata consistency check)
+    try:
+        payload_to_norm = normalize_address(payload.to)
+        if payload_to_norm != pay_to_norm:
+            return VerifyResult(
+                ok=False,
+                reason=f"Recipient mismatch: payload.to={payload_to_norm}, required={pay_to_norm}",
+            )
+    except ValueError as e:
+        return VerifyResult(ok=False, reason=f"Invalid payload.to address: {e}")
+
     # Parse the BoC to verify the actual transfer destination
     try:
         body = parse_external_message(payload.settlement_boc)
@@ -143,26 +154,30 @@ async def check_payment_intent(
                 reason=f"Expected 1 jetton transfer, found {jetton_transfer_count}",
             )
 
-        # Verify jetton wallet address via on-chain getter (skywardboundd check):
-        # The internal message destination must match get_wallet_address(payTo) on the master
+        # Verify source Jetton wallet via on-chain getter:
+        # The W5 internal message destination (sender's Jetton wallet) MUST match
+        # get_wallet_address(payload.from) on the Jetton master contract.
+        # This prevents a malicious BoC from using a substitute source contract.
         for msg in w5_msg.internal_messages:
             body_cell = msg.get("body")
             if body_cell is None:
                 continue
             transfer = extract_jetton_transfer(body_cell)
-            if transfer and transfer.jetton_wallet:
+            source_wallet = msg.get("destination")
+            if transfer and source_wallet:
                 try:
-                    expected_wallet = await provider.get_jetton_wallet(
-                        asset_norm, pay_to_norm
+                    sender_norm = normalize_address(payload.sender)
+                    expected_source = await provider.get_jetton_wallet(
+                        asset_norm, sender_norm
                     )
-                    expected_wallet_norm = normalize_address(expected_wallet)
-                    actual_wallet_norm = normalize_address(transfer.jetton_wallet)
-                    if actual_wallet_norm != expected_wallet_norm:
+                    expected_source_norm = normalize_address(expected_source)
+                    actual_source_norm = normalize_address(source_wallet)
+                    if actual_source_norm != expected_source_norm:
                         return VerifyResult(
                             ok=False,
                             reason=(
-                                f"Jetton wallet mismatch: BoC targets {actual_wallet_norm}, "
-                                f"but get_wallet_address returns {expected_wallet_norm}"
+                                f"Source Jetton wallet mismatch: BoC sends to {actual_source_norm}, "
+                                f"but get_wallet_address(from) returns {expected_source_norm}"
                             ),
                         )
                 except Exception:

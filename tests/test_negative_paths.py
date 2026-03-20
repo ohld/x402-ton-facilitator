@@ -179,7 +179,7 @@ class TestWrongRecipient:
             provider=MockProvider(),
         )
         assert not result.ok
-        assert "transfer" in result.reason.lower() or "destination" in result.reason.lower()
+        assert "recipient" in result.reason.lower() or "mismatch" in result.reason.lower()
 
 
 class TestWrongAsset:
@@ -202,6 +202,55 @@ class TestWrongAsset:
         )
         assert not result.ok
         assert "mismatch" in result.reason.lower()
+
+
+class TestPayloadToMismatch:
+    @pytest.mark.asyncio
+    async def test_payload_to_differs_from_requirements(self, signer):
+        """Reject when payload.to doesn't match requirements.payTo."""
+        wrong_to = "0:" + "ee" * 32
+        payload = _make_payload(signer, pay_to=PAYEE)
+        payload.to = wrong_to  # tamper: payload.to != required payTo
+
+        class MockProvider:
+            async def get_seqno(self, addr):
+                return 5
+            async def get_jetton_wallet(self, master, owner):
+                return "0:" + "cc" * 32
+
+        result = await check_payment_intent(
+            payload,
+            required_amount="10000",
+            required_pay_to=PAYEE,
+            required_asset=USDT_MASTER,
+            provider=MockProvider(),
+        )
+        assert not result.ok
+        assert "recipient" in result.reason.lower() or "mismatch" in result.reason.lower()
+
+
+class TestSourceJettonWallet:
+    @pytest.mark.asyncio
+    async def test_wrong_source_wallet(self, signer):
+        """Reject when BoC targets a different source Jetton wallet than expected."""
+        payload = _make_payload(signer)
+        # BoC sends to "0:cc..cc" but mock says sender's wallet is "0:ee..ee"
+
+        class MockProvider:
+            async def get_seqno(self, addr):
+                return 5
+            async def get_jetton_wallet(self, master, owner):
+                return "0:" + "ee" * 32  # different from BoC's "0:cc..cc"
+
+        result = await check_payment_intent(
+            payload,
+            required_amount="10000",
+            required_pay_to=PAYEE,
+            required_asset=USDT_MASTER,
+            provider=MockProvider(),
+        )
+        assert not result.ok
+        assert "source" in result.reason.lower() or "jetton wallet" in result.reason.lower()
 
 
 class TestProtocol:
