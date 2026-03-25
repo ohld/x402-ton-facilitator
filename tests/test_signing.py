@@ -6,7 +6,7 @@ import pytest
 from nacl.signing import SigningKey
 from pytoniq_core import Builder, Cell
 
-from tvm_core.boc import parse_boc_and_extract, parse_external_message, parse_w5_body
+from tvm_core.boc import parse_external_message, parse_w5_body
 from tvm_core.constants import W5R1_CODE_HASH
 from tvm_core.ed25519 import verify_w5_code_hash, verify_w5_signature
 from tvm_core.signing import W5R1Signer, create_w5_sign_fn
@@ -26,6 +26,11 @@ def dummy_messages():
     ]
 
 
+def _extract_body(boc_b64: str) -> Cell:
+    """Extract body cell from a signed external message BoC."""
+    return parse_external_message(boc_b64)
+
+
 class TestW5R1Signer:
     def test_address_format(self, signer):
         addr = signer.address
@@ -43,7 +48,8 @@ class TestW5R1Signer:
         boc_b64 = signer.sign_transfer(
             seqno=1, valid_until=1999999999, messages=dummy_messages
         )
-        ok, reason = verify_w5_signature(boc_b64, signer.public_key)
+        body = _extract_body(boc_b64)
+        ok, reason = verify_w5_signature(body, signer.public_key)
         assert ok, f"Signature verification failed: {reason}"
 
     def test_parsed_fields_match(self, signer, dummy_messages):
@@ -52,7 +58,7 @@ class TestW5R1Signer:
         boc_b64 = signer.sign_transfer(
             seqno=seqno, valid_until=valid_until, messages=dummy_messages
         )
-        body = parse_external_message(boc_b64)
+        body = _extract_body(boc_b64)
         w5_msg = parse_w5_body(body)
 
         assert w5_msg.seqno == seqno
@@ -66,10 +72,10 @@ class TestW5R1Signer:
     def test_single_message(self, signer):
         msgs = [{"address": "0:" + "cc" * 32, "amount": "50000000"}]
         boc_b64 = signer.sign_transfer(seqno=1, valid_until=1999999999, messages=msgs)
-        ok, _ = verify_w5_signature(boc_b64, signer.public_key)
+        body = _extract_body(boc_b64)
+        ok, _ = verify_w5_signature(body, signer.public_key)
         assert ok
 
-        body = parse_external_message(boc_b64)
         w5_msg = parse_w5_body(body)
         assert len(w5_msg.internal_messages) == 1
 
@@ -81,22 +87,18 @@ class TestW5R1Signer:
         cell = Cell.one_from_boc(raw)
         cs = cell.begin_parse()
 
-        # ext_in_msg_info$10
         assert cs.load_uint(2) == 2
-        cs.load_uint(2)  # src addr_none
-        cs.load_address()  # dest
-        cs.load_coins()  # import_fee
+        cs.load_uint(2)
+        cs.load_address()
+        cs.load_coins()
 
-        # state_init must be present
         has_si = cs.load_bit()
         assert has_si, "seqno=0 should include state_init"
         is_ref = cs.load_bit()
         assert is_ref
         si_cell = cs.load_ref()
 
-        # Verify code hash
-        si_boc_b64 = base64.b64encode(si_cell.to_boc()).decode()
-        assert verify_w5_code_hash(si_boc_b64)
+        assert verify_w5_code_hash(si_cell)
 
     def test_seqno_nonzero_no_state_init(self, signer, dummy_messages):
         boc_b64 = signer.sign_transfer(
@@ -106,8 +108,8 @@ class TestW5R1Signer:
         cell = Cell.one_from_boc(raw)
         cs = cell.begin_parse()
 
-        cs.load_uint(2)  # tag
-        cs.load_uint(2)  # src
+        cs.load_uint(2)
+        cs.load_uint(2)
         cs.load_address()
         cs.load_coins()
 
@@ -115,7 +117,6 @@ class TestW5R1Signer:
         assert not has_si, "seqno>0 should not include state_init"
 
     def test_code_hash_matches_constant(self, signer):
-        # The signer uses W5R1_CODE_BOC which should hash to W5R1_CODE_HASH
         from tvm_core.signing import _load_w5r1_code
 
         code_cell = _load_w5r1_code()
@@ -126,23 +127,23 @@ class TestW5R1Signer:
         boc_b64 = signer.sign_transfer(
             seqno=1, valid_until=1999999999, messages=dummy_messages
         )
+        body = _extract_body(boc_b64)
         wrong_key = SigningKey.generate()
         wrong_pubkey = bytes(wrong_key.verify_key).hex()
-        ok, reason = verify_w5_signature(boc_b64, wrong_pubkey)
+        ok, reason = verify_w5_signature(body, wrong_pubkey)
         assert not ok
         assert "failed" in reason.lower() or "error" in reason.lower()
 
     def test_message_with_payload(self, signer):
-        # Build a dummy payload BoC (jetton transfer body)
         pb = Builder()
-        pb.store_uint(0x0F8A7EA5, 32)  # jetton transfer op
-        pb.store_uint(0, 64)  # query_id
-        pb.store_coins(1000000)  # jetton amount
-        pb.store_uint(0, 2)  # destination: addr_none (placeholder)
-        pb.store_uint(0, 2)  # response_destination: addr_none
-        pb.store_bit(0)  # no custom_payload
-        pb.store_coins(1)  # forward_ton_amount
-        pb.store_bit(0)  # no forward_payload
+        pb.store_uint(0x0F8A7EA5, 32)
+        pb.store_uint(0, 64)
+        pb.store_coins(1000000)
+        pb.store_uint(0, 2)
+        pb.store_uint(0, 2)
+        pb.store_bit(0)
+        pb.store_coins(1)
+        pb.store_bit(0)
         payload_boc = base64.b64encode(pb.end_cell().to_boc()).decode()
 
         msgs = [
@@ -150,23 +151,22 @@ class TestW5R1Signer:
         ]
         boc_b64 = signer.sign_transfer(seqno=1, valid_until=1999999999, messages=msgs)
 
-        ok, _ = verify_w5_signature(boc_b64, signer.public_key)
+        body = _extract_body(boc_b64)
+        ok, _ = verify_w5_signature(body, signer.public_key)
         assert ok
 
-        body = parse_external_message(boc_b64)
         w5_msg = parse_w5_body(body)
         assert len(w5_msg.internal_messages) == 1
-        # The internal message should have a body cell with jetton transfer op
         body_cell = w5_msg.internal_messages[0]["body"]
         cs = body_cell.begin_parse()
         assert cs.load_uint(32) == 0x0F8A7EA5
 
     def test_empty_messages(self, signer):
         boc_b64 = signer.sign_transfer(seqno=1, valid_until=1999999999, messages=[])
-        ok, _ = verify_w5_signature(boc_b64, signer.public_key)
+        body = _extract_body(boc_b64)
+        ok, _ = verify_w5_signature(body, signer.public_key)
         assert ok
 
-        body = parse_external_message(boc_b64)
         w5_msg = parse_w5_body(body)
         assert w5_msg.seqno == 1
         assert len(w5_msg.internal_messages) == 0
@@ -190,7 +190,8 @@ class TestCreateW5SignFn:
         boc_b64 = await sign_fn(seqno=1, valid_until=1999999999, messages=msgs)
 
         signer = W5R1Signer(bytes(test_keypair))
-        ok, _ = verify_w5_signature(boc_b64, signer.public_key)
+        body = _extract_body(boc_b64)
+        ok, _ = verify_w5_signature(body, signer.public_key)
         assert ok
 
     @pytest.mark.asyncio
@@ -198,10 +199,9 @@ class TestCreateW5SignFn:
         sign_fn = create_w5_sign_fn(bytes(test_keypair))
         signer = W5R1Signer(bytes(test_keypair))
 
-        # The sign_fn creates its own internal signer with same params
         msgs = [{"address": "0:" + "aa" * 32, "amount": "100000000"}]
         boc_b64 = await sign_fn(seqno=1, valid_until=1999999999, messages=msgs)
 
-        # Verify using the signer's public key
-        ok, _ = verify_w5_signature(boc_b64, signer.public_key)
+        body = _extract_body(boc_b64)
+        ok, _ = verify_w5_signature(body, signer.public_key)
         assert ok

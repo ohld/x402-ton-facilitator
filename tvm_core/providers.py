@@ -26,6 +26,10 @@ class TonProvider(Protocol):
         """Get account state including balance and status."""
         ...
 
+    async def get_public_key(self, address: str) -> str:
+        """Get the Ed25519 public key of a wallet contract (hex)."""
+        ...
+
     async def get_transaction(self, tx_hash: str) -> dict[str, Any] | None:
         """Get transaction by hash."""
         ...

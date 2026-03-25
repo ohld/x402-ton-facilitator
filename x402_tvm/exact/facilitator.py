@@ -1,8 +1,7 @@
 """TVM facilitator implementation for the Exact payment scheme.
 
 Self-relay architecture: the facilitator sponsors gas for user payments
-by sending internal messages with TON attached. No third-party gasless
-relay (e.g., TONAPI gasless) is needed.
+by sending internal messages with TON attached.
 """
 
 from __future__ import annotations
@@ -13,7 +12,7 @@ import time
 from typing import Any
 
 from tvm_core.address import normalize_address
-from tvm_core.boc import compute_boc_hash
+from tvm_core.boc import compute_boc_hash, parse_settlement_boc, parse_w5_body
 from tvm_core.constants import SCHEME_EXACT
 from tvm_core.providers import TonProvider
 from tvm_core.self_relay import SelfRelay
@@ -27,13 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 class ExactTvmFacilitatorScheme:
-    """TVM facilitator for the 'exact' payment scheme.
-
-    Roles:
-    - /prepare: provides seqno and message data so clients can sign offline
-    - /verify: validates signed payment BoC
-    - /settle: relays the signed message on-chain, sponsoring gas
-    """
+    """TVM facilitator for the 'exact' payment scheme."""
 
     scheme = SCHEME_EXACT
 
@@ -49,7 +42,6 @@ class ExactTvmFacilitatorScheme:
             supported_networks=self._config.supported_networks,
         )
 
-        # Self-relay: facilitator IS the relay
         self._relay: SelfRelay | None = None
         if self._config.facilitator_private_key:
             self._relay = SelfRelay(
@@ -62,23 +54,27 @@ class ExactTvmFacilitatorScheme:
     def relay(self) -> SelfRelay | None:
         return self._relay
 
+    def _derive_payer(self, payload: TvmPaymentPayload) -> str:
+        """Derive payer address from settlement BoC."""
+        try:
+            settlement = parse_settlement_boc(payload.settlement_boc)
+            return settlement.sender_address
+        except Exception:
+            return ""
+
     async def prepare(
         self,
         wallet_address: str,
         wallet_public_key: str,
         requirements: dict[str, Any],
     ) -> dict[str, Any]:
-        """Prepare signing data for a client.
-
-        The client calls this instead of a blockchain API. Returns everything
-        needed to sign a W5 transfer: seqno, messages, validUntil.
-        """
+        """Prepare signing data for a client."""
         pay_to = str(requirements.get("payTo", requirements.get("pay_to", "")))
         asset = str(requirements.get("asset", ""))
         amount = str(requirements.get("amount", "0"))
 
         if not self._relay:
-            raise RuntimeError("Facilitator private key not configured — cannot prepare")
+            raise RuntimeError("Facilitator private key not configured")
 
         return await self._relay.prepare(
             wallet_address=wallet_address,
@@ -92,7 +88,7 @@ class ExactTvmFacilitatorScheme:
         payload: dict[str, Any],
         requirements: dict[str, Any],
     ) -> dict[str, Any]:
-        """Verify a TVM payment payload. Required before settlement."""
+        """Verify a TVM payment payload."""
         try:
             tvm_payload = TvmPaymentPayload.model_validate(payload)
         except Exception as e:
@@ -102,14 +98,14 @@ class ExactTvmFacilitatorScheme:
                 "payer": None,
             }
 
+        payer = self._derive_payer(tvm_payload)
+
         scheme = requirements.get("scheme", "")
         network = str(requirements.get("network", ""))
         required_amount = str(requirements.get("amount", "0"))
         required_pay_to = str(requirements.get("payTo", requirements.get("pay_to", "")))
         required_asset = str(requirements.get("asset", ""))
-        payer = tvm_payload.sender
 
-        # Per-request config: use maxTimeoutSeconds from requirements if provided
         verify_config = self._verify_config
         max_timeout = requirements.get("maxTimeoutSeconds")
         if max_timeout is not None:
@@ -164,13 +160,13 @@ class ExactTvmFacilitatorScheme:
         if not self._relay:
             return {
                 "success": False,
-                "errorReason": "Facilitator private key not configured — cannot settle",
-                "payer": tvm_payload.sender,
+                "errorReason": "Facilitator private key not configured",
+                "payer": self._derive_payer(tvm_payload),
                 "transaction": "",
                 "network": str(requirements.get("network", "")),
             }
 
-        payer = tvm_payload.sender
+        payer = self._derive_payer(tvm_payload)
         network = str(requirements.get("network", ""))
         boc_hash = compute_boc_hash(tvm_payload.settlement_boc)
 
@@ -184,7 +180,7 @@ class ExactTvmFacilitatorScheme:
                 "payer": payer,
             }
 
-        # Always re-verify before settlement (spec: MUST NOT trust prior /verify)
+        # Always re-verify before settlement
         verify_result = await self.verify(payload, requirements)
         if not verify_result["isValid"]:
             return {
@@ -201,19 +197,16 @@ class ExactTvmFacilitatorScheme:
         except ValueError:
             pass
 
-        # Self-relay: send internal message with gas
         try:
             tx_id = await self._relay.relay(
-                signed_external_boc=tvm_payload.settlement_boc,
-                user_wallet_address=payer,
+                settlement_boc=tvm_payload.settlement_boc,
             )
 
             record.tx_hash = tx_id or boc_hash[:16]
             record.transition(PaymentState.SUBMITTED)
 
-            # Poll for confirmation
             tx_hash = await self._wait_for_confirmation(
-                tvm_payload, record, timeout=self._config.settlement_timeout
+                tvm_payload, payer, record, timeout=self._config.settlement_timeout
             )
 
             if tx_hash:
@@ -243,15 +236,13 @@ class ExactTvmFacilitatorScheme:
                 "network": network,
             }
 
-    async def _wait_for_confirmation(self, payload, record, timeout=15) -> str | None:
+    async def _wait_for_confirmation(self, payload, payer, record, timeout=15) -> str | None:
         """Poll for transaction confirmation by checking seqno advancement."""
         start = time.time()
-        sender = normalize_address(payload.sender)
+        sender = normalize_address(payer)
 
-        from tvm_core.boc import parse_external_message, parse_w5_body
-
-        body = parse_external_message(payload.settlement_boc)
-        w5_msg = parse_w5_body(body)
+        settlement = parse_settlement_boc(payload.settlement_boc)
+        w5_msg = parse_w5_body(settlement.body_cell)
 
         while time.time() - start < timeout:
             try:

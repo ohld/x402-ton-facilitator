@@ -1,13 +1,13 @@
-"""Payment verification logic — 5 rules for TON x402 payments.
+"""Payment verification logic — rules for TON x402 payments.
 
-Each rule returns a VerifyResult. All must pass for a payment to be valid.
-Pure logic: no HTTP calls inside rules (provider is injected).
+All payment details (sender, amount, destination, public key) are derived
+from the settlementBoc. No redundant fields in the payload.
 
 Rules:
 1. Protocol: scheme and network match
-2. Signature: valid Ed25519 on W5 message
+2. Signature: valid Ed25519 on W5 message (pubkey from stateInit or on-chain)
 3. Payment intent: jetton transfer amount, destination, asset match
-4. Replay protection: seqno, validUntil, BoC hash dedup
+4. Replay protection: seqno (strict equality), validUntil, BoC hash dedup
 5. Simulation: optional pre-simulation check
 """
 
@@ -17,7 +17,13 @@ import time
 from dataclasses import dataclass
 
 from .address import normalize_address
-from .boc import compute_boc_hash, extract_jetton_transfer, parse_external_message, parse_w5_body
+from .boc import (
+    compute_boc_hash,
+    extract_jetton_transfer,
+    extract_pubkey_from_state_init,
+    parse_settlement_boc,
+    parse_w5_body,
+)
 from .constants import SCHEME_EXACT, SUPPORTED_NETWORKS
 from .providers import TonProvider
 from .types import TvmPaymentPayload, VerifyResult
@@ -32,7 +38,7 @@ class VerifyConfig:
     max_valid_until_seconds: int = 600  # Max 10 min validity window
 
 
-# In-memory dedup cache for BoC hashes (MVP — Redis in production)
+# In-memory dedup cache for BoC hashes
 _seen_boc_hashes: set[str] = set()
 
 
@@ -48,12 +54,39 @@ def check_protocol(scheme: str, network: str, config: VerifyConfig) -> VerifyRes
     return VerifyResult(ok=True)
 
 
-def check_signature(boc_b64: str, pubkey_hex: str) -> VerifyResult:
-    """Rule 2: Verify Ed25519 signature on the W5 message."""
+async def check_signature(
+    payload: TvmPaymentPayload,
+    provider: TonProvider,
+) -> VerifyResult:
+    """Rule 2: Verify Ed25519 signature.
+
+    Public key is derived from:
+    - stateInit in the BoC (if present, i.e. seqno == 0)
+    - On-chain get_public_key getter (if no stateInit)
+    """
     from .ed25519 import verify_w5_signature
 
     try:
-        valid, reason = verify_w5_signature(boc_b64, pubkey_hex)
+        settlement = parse_settlement_boc(payload.settlement_boc)
+    except Exception as e:
+        return VerifyResult(ok=False, reason=f"Failed to parse settlement BoC: {e}")
+
+    # Derive public key
+    pubkey_hex = None
+    if settlement.state_init_cell is not None:
+        pubkey_hex = extract_pubkey_from_state_init(settlement.state_init_cell)
+
+    if not pubkey_hex:
+        try:
+            pubkey_hex = await provider.get_public_key(settlement.sender_address)
+        except Exception as e:
+            return VerifyResult(ok=False, reason=f"Could not get public key: {e}")
+
+    if not pubkey_hex:
+        return VerifyResult(ok=False, reason="Could not derive public key from stateInit or on-chain")
+
+    try:
+        valid, reason = verify_w5_signature(settlement.body_cell, pubkey_hex)
         if not valid:
             return VerifyResult(ok=False, reason=f"Invalid signature: {reason}")
         return VerifyResult(ok=True)
@@ -71,26 +104,33 @@ async def check_payment_intent(
 ) -> VerifyResult:
     """Rule 3: Verify jetton transfer amount, destination, and asset.
 
-    Expects exactly 1 jetton_transfer action in the signed message.
+    All fields are derived from the BoC. Expects exactly 1 jetton_transfer action.
     """
     try:
         pay_to_norm = normalize_address(required_pay_to)
         asset_norm = normalize_address(required_asset)
-        token_master_norm = normalize_address(payload.token_master)
+        payload_asset_norm = normalize_address(payload.asset)
     except ValueError as e:
         return VerifyResult(ok=False, reason=f"Invalid address: {e}")
 
-    if token_master_norm != asset_norm:
+    if payload_asset_norm != asset_norm:
         return VerifyResult(
             ok=False,
-            reason=f"Token mismatch: expected {asset_norm}, got {token_master_norm}",
+            reason=f"Asset mismatch: expected {asset_norm}, got {payload_asset_norm}",
         )
+
+    # Parse BoC to derive sender and verify transfer
+    try:
+        settlement = parse_settlement_boc(payload.settlement_boc)
+        sender_address = settlement.sender_address
+    except Exception as e:
+        return VerifyResult(ok=False, reason=f"Failed to parse settlement BoC: {e}")
 
     # Facilitator safety: sender must not be the facilitator itself
     if facilitator_address:
         try:
             fac_norm = normalize_address(facilitator_address)
-            sender_norm = normalize_address(payload.sender)
+            sender_norm = normalize_address(sender_address)
             if sender_norm == fac_norm:
                 return VerifyResult(
                     ok=False,
@@ -99,29 +139,10 @@ async def check_payment_intent(
         except ValueError:
             pass
 
-    if int(payload.amount) != int(required_amount):
-        return VerifyResult(
-            ok=False,
-            reason=f"Amount mismatch: expected {required_amount}, got {payload.amount}",
-        )
-
-    # Verify payload.to matches required payTo (explicit metadata consistency check)
+    # Parse W5 body and extract jetton transfers
     try:
-        payload_to_norm = normalize_address(payload.to)
-        if payload_to_norm != pay_to_norm:
-            return VerifyResult(
-                ok=False,
-                reason=f"Recipient mismatch: payload.to={payload_to_norm}, required={pay_to_norm}",
-            )
-    except ValueError as e:
-        return VerifyResult(ok=False, reason=f"Invalid payload.to address: {e}")
+        w5_msg = parse_w5_body(settlement.body_cell)
 
-    # Parse the BoC to verify the actual transfer destination
-    try:
-        body = parse_external_message(payload.settlement_boc)
-        w5_msg = parse_w5_body(body)
-
-        # Find jetton transfers among internal messages
         found_valid_transfer = False
         jetton_transfer_count = 0
         for msg in w5_msg.internal_messages:
@@ -147,17 +168,14 @@ async def check_payment_intent(
                 reason="No valid jetton transfer found matching required amount and destination",
             )
 
-        # Self-relay model: expect exactly 1 jetton transfer (no relay commission)
+        # Exactly 1 jetton transfer (no relay commission in self-relay model)
         if jetton_transfer_count > 1:
             return VerifyResult(
                 ok=False,
                 reason=f"Expected 1 jetton transfer, found {jetton_transfer_count}",
             )
 
-        # Verify source Jetton wallet via on-chain getter:
-        # The W5 internal message destination (sender's Jetton wallet) MUST match
-        # get_wallet_address(payload.from) on the Jetton master contract.
-        # This prevents a malicious BoC from using a substitute source contract.
+        # Verify source Jetton wallet via on-chain getter
         for msg in w5_msg.internal_messages:
             body_cell = msg.get("body")
             if body_cell is None:
@@ -166,7 +184,7 @@ async def check_payment_intent(
             source_wallet = msg.get("destination")
             if transfer and source_wallet:
                 try:
-                    sender_norm = normalize_address(payload.sender)
+                    sender_norm = normalize_address(sender_address)
                     expected_source = await provider.get_jetton_wallet(
                         asset_norm, sender_norm
                     )
@@ -181,7 +199,6 @@ async def check_payment_intent(
                             ),
                         )
                 except Exception:
-                    # Non-fatal: if RPC fails, the on-chain execution will catch it
                     pass
 
     except Exception as e:
@@ -195,17 +212,28 @@ async def check_replay(
     provider: TonProvider,
     cfg: VerifyConfig | None = None,
 ) -> VerifyResult:
-    """Rule 4: Check for replay attacks."""
+    """Rule 4: Check for replay attacks.
+
+    Seqno check uses strict equality (TON requires exact match).
+    """
     now = int(time.time())
 
-    if payload.valid_until < now:
+    # Parse BoC to get sender address and W5 body
+    try:
+        settlement = parse_settlement_boc(payload.settlement_boc)
+        w5_msg = parse_w5_body(settlement.body_cell)
+        sender_addr = normalize_address(settlement.sender_address)
+    except Exception as e:
+        return VerifyResult(ok=False, reason=f"Failed to parse BoC for replay check: {e}")
+
+    if w5_msg.valid_until > 0 and w5_msg.valid_until < now:
         return VerifyResult(ok=False, reason="Payment expired")
 
     max_seconds = cfg.max_valid_until_seconds if cfg else 600
-    if payload.valid_until > now + max_seconds:
+    if w5_msg.valid_until > 0 and w5_msg.valid_until > now + max_seconds:
         return VerifyResult(
             ok=False,
-            reason=f"validUntil too far in future: {payload.valid_until - now}s from now (max {max_seconds}s)",
+            reason=f"validUntil too far in future: {w5_msg.valid_until - now}s from now (max {max_seconds}s)",
         )
 
     boc_hash = compute_boc_hash(payload.settlement_boc)
@@ -213,21 +241,16 @@ async def check_replay(
         return VerifyResult(ok=False, reason="Duplicate BoC (replay)")
 
     try:
-        sender_addr = normalize_address(payload.sender)
         on_chain_seqno = await provider.get_seqno(sender_addr)
 
-        body = parse_external_message(payload.settlement_boc)
-        w5_msg = parse_w5_body(body)
-
-        # seqno=0 from parser means it couldn't extract seqno (unknown wallet format)
-        # In that case, skip seqno check — the wallet contract will enforce it on-chain
-        if w5_msg.seqno > 0 and w5_msg.seqno < on_chain_seqno:
+        # Strict equality: TON requires seqno to match exactly
+        if w5_msg.seqno != on_chain_seqno:
             return VerifyResult(
                 ok=False,
-                reason=f"Stale seqno: BoC has {w5_msg.seqno}, chain has {on_chain_seqno}",
+                reason=f"Seqno mismatch: BoC has {w5_msg.seqno}, chain has {on_chain_seqno}",
             )
-    except Exception as e:
-        # Non-fatal: seqno check is an optimization, wallet contract is the authority
+    except Exception:
+        # Non-fatal: wallet contract is the authority
         pass
 
     return VerifyResult(ok=True)
@@ -267,7 +290,7 @@ async def verify_payment(
     if not result.ok:
         return result
 
-    result = check_signature(payload.settlement_boc, payload.wallet_public_key)
+    result = await check_signature(payload, provider)
     if not result.ok:
         return result
 

@@ -11,20 +11,12 @@ from pydantic import BaseModel, Field
 class TvmPaymentPayload(BaseModel):
     """TON-specific payment payload sent by the client.
 
-    The outer x402 PaymentPayload.payload dict is deserialized into this.
-    In the self-relay architecture, the client sends:
-    - A signed W5 internal_signed BoC (wrapped in external message for transport)
-    - Their public key for verification
+    Minimal: only settlementBoc (internal message BoC) and asset (token master).
+    All other fields (from, to, amount, publicKey) are derived from the BoC.
     """
 
-    sender: str = Field(alias="from")
-    to: str
-    token_master: str = Field(alias="tokenMaster")
-    amount: str
-    valid_until: int = Field(alias="validUntil")
-    nonce: str = ""  # deprecated, kept for backward compatibility
     settlement_boc: str = Field(alias="settlementBoc")
-    wallet_public_key: str = Field(alias="walletPublicKey")
+    asset: str  # Jetton master contract address (raw format)
 
     model_config = {"populate_by_name": True}
 
@@ -51,7 +43,7 @@ class PrepareResponse(BaseModel):
 
 
 class W5ParsedMessage(BaseModel):
-    """Parsed contents of a W5 external message."""
+    """Parsed contents of a W5 signed message body."""
 
     seqno: int
     valid_until: int
@@ -67,6 +59,16 @@ class JettonTransferInfo(BaseModel):
     response_destination: str | None = None
     forward_ton_amount: int = 0
     jetton_wallet: str = ""
+
+
+class SettlementData(BaseModel):
+    """Parsed settlement BoC (internal message format)."""
+
+    sender_address: str  # dest of the internal message = client wallet
+    body_cell: Any  # Cell — the W5 signed body
+    state_init_cell: Any | None = None  # Cell — optional stateInit for deployment
+
+    model_config = {"arbitrary_types_allowed": True}
 
 
 class VerifyResult(BaseModel):

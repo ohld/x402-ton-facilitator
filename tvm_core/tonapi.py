@@ -56,6 +56,27 @@ class TonapiProvider:
             "code_hash": data.get("code_hash", ""),
         }
 
+    async def get_public_key(self, address: str) -> str:
+        """Get the Ed25519 public key of a wallet contract."""
+        resp = await self._client.get(
+            f"/v2/blockchain/accounts/{address}/methods/get_public_key",
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        # TONAPI returns stack with the public key as a hex number
+        stack = data.get("stack", data.get("decoded", {}))
+        if isinstance(stack, list) and len(stack) > 0:
+            item = stack[0]
+            num = item.get("num", "")
+            # Remove 0x prefix and pad to 64 chars
+            return num.replace("0x", "").zfill(64)
+        if isinstance(stack, dict):
+            pk = stack.get("public_key", "")
+            if isinstance(pk, int):
+                return hex(pk)[2:].zfill(64)
+            return str(pk).replace("0x", "").zfill(64)
+        raise ValueError(f"Could not extract public key from response: {data}")
+
     async def get_transaction(self, tx_hash: str) -> dict[str, Any] | None:
         resp = await self._client.get(f"/v2/blockchain/transactions/{tx_hash}")
         if resp.status_code == 404:
