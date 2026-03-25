@@ -236,10 +236,6 @@ async def check_replay(
             reason=f"validUntil too far in future: {w5_msg.valid_until - now}s from now (max {max_seconds}s)",
         )
 
-    boc_hash = compute_boc_hash(payload.settlement_boc)
-    if boc_hash in _seen_boc_hashes:
-        return VerifyResult(ok=False, reason="Duplicate BoC (replay)")
-
     try:
         on_chain_seqno = await provider.get_seqno(sender_addr)
 
@@ -309,8 +305,13 @@ async def verify_payment(
     if not result.ok:
         return result
 
-    # Mark BoC as seen (after all checks pass)
-    boc_hash = compute_boc_hash(payload.settlement_boc)
-    _seen_boc_hashes.add(boc_hash)
-
     return VerifyResult(ok=True)
+
+
+def mark_boc_settled(boc_b64: str) -> bool:
+    """Mark a BoC as settled. Returns False if already settled (duplicate)."""
+    boc_hash = compute_boc_hash(boc_b64)
+    if boc_hash in _seen_boc_hashes:
+        return False
+    _seen_boc_hashes.add(boc_hash)
+    return True

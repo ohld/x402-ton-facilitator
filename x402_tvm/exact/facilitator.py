@@ -18,7 +18,7 @@ from tvm_core.providers import TonProvider
 from tvm_core.self_relay import SelfRelay
 from tvm_core.state import PaymentStateStore
 from tvm_core.types import PaymentState, TvmPaymentPayload, VerifyResult
-from tvm_core.verify import VerifyConfig, verify_payment
+from tvm_core.verify import VerifyConfig, mark_boc_settled, verify_payment
 
 from ..config import TvmFacilitatorConfig
 
@@ -186,6 +186,16 @@ class ExactTvmFacilitatorScheme:
             return {
                 "success": False,
                 "errorReason": verify_result.get("invalidReason", "Verification failed"),
+                "payer": payer,
+                "transaction": "",
+                "network": network,
+            }
+
+        # Dedup: reject if this BoC was already settled
+        if not mark_boc_settled(tvm_payload.settlement_boc):
+            return {
+                "success": False,
+                "errorReason": "duplicate_settlement",
                 "payer": payer,
                 "transaction": "",
                 "network": network,
